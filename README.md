@@ -37,19 +37,7 @@ Models implement `src/models/base.BaselineModel` (`fit`, `predict`).
 Foundation-model wrappers (Geneformer, scGPT, scFoundation, UCE, etc.) plug
 into the same `BaselineModel` interface.
 
-## Running the smoke test
-```bash
-pip install -r requirements.txt
-python notebooks/01_explore.py            # generates plots/ from synthetic data
-pytest -q                                  # sanity checks the task interface
-```
 
-## Real data
-HNOCA full + cleaned AnnData lives on Zenodo (records 14160929 and 14161275),
-plus CELLxGENE and the `theislab/neural_organoid_atlas` repo. See
-`src/data/hnoca.py` for download URLs and helpers — sandbox network is
-restricted, so on-laptop or on-cluster execution is expected for the real
-1.7M-cell object.
 
 ## Open decisions
 Tracked in `docs/decisions.md`.
