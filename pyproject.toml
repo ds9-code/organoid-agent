@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "organoid-agent-mvp"
+version = "0.0.1"
+description = "MVP scaffold for an organoid-transcriptomics agent benchmarking on HNOCA."
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

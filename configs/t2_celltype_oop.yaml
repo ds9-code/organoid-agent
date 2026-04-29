@@ -1,0 +1,9 @@
+task: t2_celltype_oop
+data:
+  source: synthetic
+  hnoca_path: data/hnoca_clean.h5ad
+task_args:
+  holdout_frac: 0.25
+models:
+  - logreg
+  - knn

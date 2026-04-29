@@ -1,0 +1,16 @@
+task: t1_next_timepoint
+data:
+  source: synthetic     # or: hnoca
+  hnoca_path: data/hnoca_clean.h5ad
+  regions: [telencephalon]   # ignored when source=synthetic
+  protocols: null
+  min_day: 15
+  max_day: 400
+task_args:
+  hvg_top: 800
+  holdout_organoid_frac: 0.25
+  use_log1p: true
+models:
+  - identity
+  - pop_mean
+  - linear

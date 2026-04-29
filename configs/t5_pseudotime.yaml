@@ -1,0 +1,7 @@
+task: t5_pseudotime
+data:
+  source: synthetic
+task_args:
+  hvg_top: 400
+models:
+  - pc1
