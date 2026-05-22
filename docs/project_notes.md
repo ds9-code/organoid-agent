@@ -1,216 +1,458 @@
-# Organoid Agent — Project Notes
+% Organoid Agent — Project Notes
+% Diya Sreedhar (Arlotta Lab MVP)
+% v0.2 — answers to Q1 and Q2
 
-## Overview
+# Vision
 
-Build a natural-language agent that uses the **Human Neural Organoid Cell
-Atlas** ([HNOCA, He et al. *Nature* 2024](https://www.nature.com/articles/s41586-024-08172-8))
-as a tool: ask it a biology question in plain English (*"what cell types do I
-get from a Velasco day-100 cortical organoid?"*) and it answers by querying
-real HNOCA cells, not by guessing from text.
+Build an **LLM-powered agent that orchestrates tools** to do science on
+brain organoids:
 
-End goal: same pattern as [mims-harvard/cellflow](https://github.com/mims-harvard/cellflow)
-(LLM as the reasoning layer, an ML model as the tool), but for organoid
-**benchmarking + discovery**, not for morphogen perturbation prediction.
+- *calls to pre-trained models* (e.g. CellFlow, scGPT, Geneformer, scFoundation, UCE),
+- *API calls to PubMed / OpenAlex / OpenScholar* to retrieve organoid papers,
+- *code generation* to query HNOCA and other brain-organoid atlases,
+- *code generation* to run downstream analyses on those queries.
 
-Two-stage payoff:
+The end goal is an **AI scientist for brain organoids** that makes
+predictions about private Arlotta-Lab datasets, which the lab then validates
+at the bench. Before we get there, we need to demonstrate a competent agent
+that beats current frontier models on a **public benchmark** built from
+HNOCA. That public benchmark is what this week's questions are about.
 
-1. **Benchmark on HNOCA.** Define 3–5 well-posed tasks; show a foundation
-   model (Geneformer / scGPT / scFoundation / UCE) beats classical baselines.
-2. **Discover on Paola's organoids.** Project them into the validated HNOCA
-   latent space; flag unmatched populations + trajectory deviations.
+Two reference architectures we're explicitly modelling on:
+
+- **Medea** ([mims-harvard/medea](https://github.com/mims-harvard/medea),
+  [bioRxiv 2026](https://www.biorxiv.org/content/10.64898/2026.01.16.696667v1))
+  — an omics AI agent for therapeutic discovery. **Three collaborating
+  modules** (Research Planning, Analysis = code-gen, Literature Reasoning),
+  17 tools, debate rounds across a panel of LLMs. Built on AgentLite; uses
+  ToolUniverse for tool management. Evaluated on three tasks: TargetID,
+  Synthetic Lethality, Immune Therapy Response.
+- **TxAgent** ([arXiv:2503.10970](https://arxiv.org/abs/2503.10970)) — a
+  precision-medicine agent with **211 tools**, 92.1% on open-ended drug
+  reasoning, 5 new benchmarks (DrugPC, BrandPC, GenericPC, TreatmentPC,
+  DescriptionPC). Useful reference for tool-ablation methodology.
+
+Reference review for what AI is doing in organoids today:
+**Ramesan et al. 2026**, "Next-generation discovery: empowering organoid
+research with machine learning, AI, and mathematical modeling,"
+[*Trends in Biotechnology*](https://www.cell.com/trends/biotechnology/fulltext/S0167-7799(26)00009-0).
 
 ---
 
-## Thought Process
+# Question 1 — what model innovations / tools / datasets?
 
-### 1) Initial Plan (what was already in the repo)
+## 1a. Architecture pattern (what the agent looks like)
 
-a) **Data.** Pull cleaned HNOCA from Zenodo
-   ([record `14161275`](https://zenodo.org/records/14161275)), subset to a
-   region / protocol family, build benchmarks on it.
-
-b) **Experiment.** Five candidate tasks defined in `docs/tasks.md`:
+Mirror Medea's three-module design, specialised for organoid biology:
 
 ```
-T1  next-timepoint pseudobulk      x_t  → x_{t+1}      Pearson / MSE
-T2  out-of-protocol cell-type      X    → label        macro-F1 / accuracy
-T3  primary-reference fidelity     cell → score        OT distance / sim
-T4  perturbation response          ctrl → treated      composition KL
-T5  real-time pseudotime           cell → age_days     Spearman / Kendall
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Organoid-Agent (LLM orchestrator)            │
+│  ┌────────────────────┐  ┌───────────────────┐ ┌──────────────────┐ │
+│  │ Research Planning  │  │ Analysis          │ │ Literature       │ │
+│  │ – frames the q     │  │ – code gen        │ │ Reasoning        │ │
+│  │ – picks tools      │  │ – runs in scanpy  │ │ – PubMed/OpenAlex│ │
+│  │ – verifies biology │  │ – debugs          │ │ – paper judge    │ │
+│  └────────────────────┘  └───────────────────┘ └──────────────────┘ │
+│                  Panel discussion / debate rounds                   │
+└─────────────────────────────────────────────────────────────────────┘
+              │                  │                       │
+              v                  v                       v
+    Tool layer (the verbs the LLM can call — see 1b)
+              │
+              v
+    Data layer (HNOCA, dev-brain references, Paola — see 1c)
 ```
 
-Each baseline implements `BaselineModel.fit / predict`; tasks plug into the
-same `Task.prepare → score` interface. Foundation models drop in behind the
-same API.
+Key innovation vs Medea: **the analysis module needs to know about
+single-cell / scRNA-seq specifically.** Medea's `CodeGenerator` does generic
+omics; ours needs to be primed with scanpy / anndata / scvi-tools idioms,
+HNOCA's obs schema, and the failure modes of organoid data (batch effects,
+protocol confounders, label-space drift across studies).
 
-c) **Figures / Metrics.** A leaderboard per task + a pred-vs-true scatter for
-the regression tasks.
+## 1b. Tools to add (organoid-specific)
 
-**Diagram (as cloned):**
+Grouped by what they do. Names in `code font` are concrete things we can
+implement; **bold** are *high-priority for v1* (i.e. what we should ship for
+the Arlotta presentation).
+
+### Atlas query / retrieval
+
+- **`query_hnoca(region, protocol, age_min, age_max, label_col)`** —
+  what cells in the atlas match these criteria? Returns composition,
+  marker-gene means, kNN neighbours. *Already implemented* in
+  `agent/hnoca_model.py` as four sub-tools.
+- `map_query_to_atlas(adata)` — wrapper around
+  [HNOCA-tools `map_query`](https://github.com/devsystemslab/HNOCA-tools);
+  projects a query AnnData (Paola's organoids) into HNOCA's scANVI latent
+  and returns nearest-atlas-cells + presumptive labels.
+- `compare_to_primary(cells)` — score each query cell against HNOCA's
+  curated primary developing-brain reference. **The fidelity signal**
+  the HNOCA paper emphasises.
+
+### Foundation-model embeddings (call as tools, like Medea's `transcriptformer_embedding`)
+
+- **`scgpt_embed(adata)`** —
+  [scGPT (Cui et al. *Nat. Methods* 2024)](https://github.com/bowang-lab/scGPT).
+  Transformer pretrained on 33M cells.
+- **`geneformer_embed(adata)`** —
+  [Geneformer (Theodoris et al. *Nature* 2023)](https://huggingface.co/ctheodoris/Geneformer).
+  Rank-based gene tokens; strong for zero-shot tasks.
+- `scfoundation_embed(adata)` —
+  [scFoundation (Hao et al. *Nat. Methods* 2024)](https://github.com/biomap-research/scFoundation).
+  Large pretrained.
+- `uce_embed(adata)` —
+  [Universal Cell Embedding (Rosen et al. 2023)](https://github.com/snap-stanford/UCE).
+  Pretrained on 36M cells across 1,000+ tissues; good for cross-species.
+- `transcriptformer_embed(adata)` —
+  [Transcriptformer](https://github.com/czbiohub-sf/transcriptformer).
+  Same wrapper Medea ships.
+
+### Generative perturbation / trajectory predictors
+
+- **`cellflow_predict(condition)`** —
+  [CellFlow (Klein, Fleck et al. 2025)](https://github.com/theislab/CellFlow);
+  flow-matching + OT for predicting how a cell state distribution shifts
+  under a perturbation. *The headline ML tool* the lab is asking us to use.
+- `moscot_pseudotime(adata)` —
+  [moscot](https://github.com/theislab/moscot) neural OT, the
+  pseudotime backbone HNOCA itself uses.
+- `scgen_predict(adata)` — older but well-validated perturbation predictor.
+
+### Literature / hypothesis lookup (Medea-style)
+
+- **`pubmed_search(query)`** — direct port of Medea's `pubmed_search.py`.
+- `openalex_search(query)` — OpenAlex API for open-access metadata
+  (Medea ships `open_alex.py`).
+- `openscholar_reason(question)` — Medea's `OpenScholarReasoning` action;
+  use it to filter and synthesize papers per question.
+- `paper_judge(paper, question)` — relevance scoring, again from Medea.
+
+### Code generation + execution (Medea-style)
+
+- **`scanpy_codegen(task)` → `execute(code)`** — generate scanpy/anndata
+  Python for ad-hoc queries (e.g. *"plot a UMAP of Velasco cells coloured
+  by NEUROD6"*), execute in a sandboxed kernel, capture stdout + figures.
+  Medea's `CodeGenerator` + `AnalysisExecution` + `CodeDebug` is the
+  template.
+
+### Bench-relevance / discovery (where the Arlotta connection lives)
+
+- `find_novel_cells(query_adata, atlas)` — score cells by latent-space
+  distance to nearest HNOCA neighbours; flag the top-N% as candidates for
+  *novel* states.
+- `trajectory_deviation(query_adata, atlas, protocol)` — does the query
+  follow the closest atlas trajectory under the same protocol? Quantify
+  with KL-divergence on composition.
+- `marker_gene_proposer(unmatched_cluster)` — given an unmatched cluster,
+  return its top DE genes vs. nearest atlas type → wet-lab targets.
+
+### Tool-management framework
+
+Use [ToolUniverse](https://github.com/mims-harvard/ToolUniverse) — the
+same registry Medea uses, with a JSON-schema config per tool. Free
+benefit: Medea's existing tools (PubMed search, code gen, paper judge)
+plug in directly.
+
+## 1c. Datasets to include
+
+### Tier 1 — required for v1 benchmark
+
+| Dataset | Size | Where | Why |
+|---|---|---|---|
+| **HNOCA cleaned atlas** | 1.77M cells × 36k genes | [Zenodo 14161275](https://zenodo.org/records/14161275) → `hnoca_cleanedmeta.h5ad` (17.5 GB) | The benchmark substrate. 36 datasets, 26 protocols, days 7-450. We stream subsets ([scripts/download_hnoca_subset.py](../scripts/download_hnoca_subset.py)) instead of full download. |
+| **Braun et al. dev-brain reference** | 1.6M fetal brain cells | [GSE166854](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE166854) / [Linnarsson lab](http://linnarssonlab.org/dataset/humandev/) | HNOCA's *primary reference* for fidelity scoring. T3 needs this. |
+| **CellxGene HNOCA mirror** | same as Zenodo | [collection `de379e5f-52d0-498c-9801-0f850823c847`](https://cellxgene.cziscience.com/collections/de379e5f-52d0-498c-9801-0f850823c847) | Backup access + standard schema. |
+
+### Tier 2 — orthogonal validation / scope expansion
+
+| Dataset | Where | Why |
+|---|---|---|
+| **iNeurons morphogen screen** (CellFlow training data) | [`theislab/cellflow-datasets`](https://huggingface.co/datasets/theislab/cellflow-datasets) (gated) | Real perturbation pairs — gives us a T4 (perturbation response) signal CellFlow was trained for. |
+| **NOHA — Neural Organoid Hormonal Atlas** | [CellxGene `2bebc4ae-69a2-4001-9d2f-091ec9b4020c`](https://cellxgene.cziscience.com/collections/2bebc4ae-69a2-4001-9d2f-091ec9b4020c) | Hormonal-axis perturbations on neural organoids; complementary to HNOCA's developmental axis. |
+| **Cerebellar organoid atlas** | [CellxGene `0dd101f7-9829-44b3-a323-18b113eabeb4`](https://cellxgene.cziscience.com/collections/0dd101f7-9829-44b3-a323-18b113eabeb4) | Region not well-covered by HNOCA. |
+| **VPA-treated dorsal forebrain organoids** | [CellxGene `c2879de0-affc-496b-8e2b-f57ed9ec3c34`](https://cellxgene.cziscience.com/collections/c2879de0-affc-496b-8e2b-f57ed9ec3c34) | Drug-treated organoids — directly relevant to "predict response to X" tasks. |
+| **HNOCA disease atlas** | [Zenodo 14161275 → `disease_atlas.h5ad`](https://zenodo.org/records/14161275) (2 GB) | Disease-condition organoids; useful for T4. |
+
+### Tier 3 — long-tail / reference knowledge
+
+- **OpenTargets** (gene-disease links; Medea's `load_disease_targets`)
+- **DepMap** (cell-line viability for validation; Medea's `compute_depmap_correlations`)
+- **PINNACLE protein embeddings** (cell-type-contextual PPI; Medea's `load_pinnacle_ppi`)
+- **Human Protein Atlas** (tissue-resolved expression)
+- **HumanBase** (tissue-specific co-expression / PPI)
+- **WikiPathways / Reactome** (pathway context for genes the agent surfaces)
+
+### Tier 4 — private (deferred)
+
+- **Arlotta-Lab organoid scRNA-seq** — the final eval target. Not used
+  for benchmark development; the agent should never see it during
+  training/dev.
+
+## 1d. What "model innovation" actually means here
+
+Three innovations that distinguish a useful organoid agent from
+"GPT-4o + retrieval":
+
+1. **Tool-grounded numeric claims.** The LLM never produces a composition
+   fraction, an expression value, or a "% novel cells" from its own
+   weights; every quantitative claim is the literal return value of a tool
+   call. This is the rule in Medea, in our `agent/hnoca_model.py`, and the
+   non-negotiable for credibility with Paola.
+2. **Foundation-model-as-tool, not foundation-model-as-replacement.** The
+   agent calls Geneformer/scGPT/CellFlow as backends, picks between them
+   per question, and reports which one it used. Lets us ablate the tool
+   set and quantify what each backbone contributes (the TxAgent paper
+   template for tool ablations).
+3. **Atlas-grounded generalisation.** For Paola's data, generalisation is
+   measured against HNOCA cells, not against a held-out test split of her
+   data. *Novel cell ~no good neighbour in HNOCA*; *protocol-deviation ~
+   trajectory mismatch with the closest atlas protocol*.
+
+---
+
+# Question 2 — what benchmarks?
+
+For each task we list: input, target, metric, baseline, what would
+constitute success on the Arlotta presentation.
+
+The lab spreadsheet
+([here](https://docs.google.com/spreadsheets/d/1EQJt4gmtYizkpFChsMGtWoOw4zbkLvjm0O5mBpaj6So/edit))
+defines the formal task list — the table below is our concrete instantiation
+of those rows against HNOCA.
+
+## 2a. Benchmark tasks (HNOCA-grounded)
+
+| ID | Question | Input → Target | Primary metric | Baselines |
+|---|---|---|---|---|
+| T1 | Next-timepoint pseudobulk within protocol | pseudobulk(t) → pseudobulk(t+1) within protocol | Pearson, MSE, sign-acc-lineage | identity (x\_t), pop-mean, ridge, FM-conditioned ridge |
+| T2 | Out-of-protocol cell-type generalisation | cells from {A,B,C} → labels on cells from D | macro-F1, accuracy, per-class F1 | logreg, kNN, scGPT / Geneformer head |
+| T3 | Primary-reference fidelity | organoid cell → similarity-to-primary | Spearman vs. published score, AUROC on "matched" cells | random, raw-correlation, HNOCA-tools score |
+| T4 | Cross-protocol composition shift | Velasco @ age T → Lancaster @ age T | KL on composition, MMD on embeddings | identity (same protocol), CellFlow, FM-conditioned regressor |
+| T5 | Real-time pseudotime | cell expression → organoid\_age\_days | Spearman, Kendall-tau, within-protocol Spearman | PC1, diffusion-pseudotime, moscot, scGPT embed + ridge |
+| T6 | Novel-cell detection (atlas mapping) | query cells (Paola or masked HNOCA) → "in atlas" / "novel" | AUROC (held-out HNOCA-tools labels vs. random injections) | random, kNN-distance, HNOCA-tools `map_query` |
+| T7 | Atlas QA (LLM-graded) | NL question → answer grounded in tool calls | accuracy, hallucination rate, tool-call F1 | frontier LLM (no tools), retrieval-only LLM, our agent |
+
+### T1, T2, T5 are already implemented
+
+- T1 in [`src/tasks/t1_next_timepoint.py`](../src/tasks/t1_next_timepoint.py)
+  (`group_key="protocol"` for HNOCA)
+- T2 in [`src/tasks/t2_celltype_oop.py`](../src/tasks/t2_celltype_oop.py)
+- T5 in [`src/tasks/t5_pseudotime.py`](../src/tasks/t5_pseudotime.py)
+
+The numbers from `make plots` on the real Dorsal-telencephalon subset:
+
+| Task | Model | Metric | Real HNOCA |
+|---|---|---|---:|
+| T1 | identity | Pearson | 0.48 |
+| T1 | pop_mean | Pearson | 0.46 |
+| T1 | linear (ridge) | Pearson | 0.19 |
+| T1 | pop_mean | MSE | 0.26 |
+| T2 | logreg | macro-F1 | 0.16 |
+| T2 | knn | macro-F1 | 0.10 |
+| T5 | PC1 | Spearman | 0.25 |
+
+Headroom is huge — a foundation-model embedding head should beat these by
+a wide margin.
+
+### T3, T4, T6, T7 are the next chunk of work
+
+- **T3** needs the primary-similarity column added to the streamed subset
+  (it's an obs column in the full atlas; we didn't pull it the first
+  time). One-line fix in `scripts/download_hnoca_subset.py`.
+- **T4** needs (i) at least two protocols with matched ages and >=dense
+  cell counts — Velasco and Lancaster are the cleanest pair in our
+  subset; (ii) a CellFlow checkpoint we can call. The
+  [theislab/cellflow_reproducibility](https://github.com/theislab/cellflow_reproducibility)
+  repo has trained models.
+- **T6** is the closest analogue to the Arlotta use case. Construction:
+  hold out one HNOCA *region* (e.g. cerebellum), inject those cells into
+  the otherwise-trained query, see whether the agent correctly flags
+  them as novel. AUROC against the held-out region label is the metric.
+- **T7** is the **agent-vs-LLM** benchmark — see 2c.
+
+## 2b. Ablation studies (per TxAgent / Medea methodology)
+
+Following the [TxAgent ablation pattern](https://arxiv.org/abs/2503.10970):
+
+1. **Tool-by-tool removal.** Run the full agent on T1–T7, then re-run with
+   each tool individually disabled. Δaccuracy per tool = its marginal
+   contribution.
+2. **Tool-substitution.** Swap `scgpt_embed` <-> `geneformer_embed` <-> `uce_embed`
+   <-> `transcriptformer_embed`. Same agent, same prompts, different
+   foundation-model backbone → which one ports best to organoid biology?
+3. **Oracle baselines.** Give the agent gold-standard tool outputs (e.g.
+   the correct cell-type labels handed in) — measures *reasoning headroom*
+   independent of tool error.
+4. **Frontier-LLM baseline.** Same questions to GPT-5 / Claude / Gemini
+   *without any tools*, only their parametric knowledge. Quantifies the
+   value of grounded tool calls vs. text-only generation.
+5. **Retrieval-only baseline.** PubMed + OpenAlex retrieval, no
+   foundation-model embeddings, no code-gen — what does literature
+   *alone* get us?
+
+## 2c. T7 design — the agent-vs-LLM eval
+
+This is the headline result we'd want for the Arlotta presentation.
+
+- **Build set.** Generate ~200 NL questions whose ground-truth is a
+  measurable quantity in HNOCA (e.g. *"What fraction of Velasco day-100
+  cells are pyramidal neurons?"*, *"At what age does NEUROD6 peak in
+  cortical organoids?"*, *"Is BCL11B expressed in day-30 organoids?"*).
+- **Ground truth.** Computed once from HNOCA by hand-written tool calls;
+  cached.
+- **Judge.** LLM-graded with a Medea-style `PaperJudge`-equivalent —
+  binary "matches ground truth ± tolerance".
+- **Compared systems.**
+  1. Our agent with full tool set
+  2. Our agent with tools, but no foundation-model backbones
+  3. Frontier LLM (no tools)
+  4. Frontier LLM + naive RAG over HNOCA paper PDFs only
+- **Headline metrics.** Accuracy, hallucination rate (% claims not
+  backed by a tool return), tool-call F1 against a gold trajectory.
+
+## 2d. What "success" looks like for the Arlotta presentation
+
+- Our agent >= **+15 accuracy points** over the best frontier-LLM-no-tools
+  baseline on T7.
+- T4 (cross-protocol composition shift): our CellFlow-as-tool prediction
+  >= identity baseline by KL on at least 3 protocol pairs.
+- T6 (novel-cell detection): AUROC >= 0.85 on a held-out-region
+  reconstruction.
+- A clean tool-ablation plot that says "Geneformer alone gets X; +CellFlow
+  → X+Δ; +PubMed retrieval → X+Δ'".
+- A 1-paragraph "what we would do with Arlotta organoids" pitch with
+  concrete tool calls.
+
+---
+
+# Where we are right now (the journey to date)
+
+This is the project log — what was already in the repo, the four pivots,
+and the current state. Useful context for the questions above, but not the
+answer itself.
+
+## Initial Plan (what was already in the repo)
+
+a) **Data.** Pull cleaned HNOCA from Zenodo, subset to a region.
+b) **Experiment.** Five candidate tasks (T1–T5) with baselines.
+c) **Figures.** Leaderboard per task + pred-vs-true scatter.
 
 ```
 make_synthetic_hnoca()  →  Task.prepare  →  Model.fit/predict  →  metrics
    (fake counts)            (T1/T2/T5)        (identity, ridge,    (Pearson,
                                                 logreg, KNN, PC1)    F1, ρ)
                                               │
-                                              ▼
+                                              v
                                        plots/*.png + results_long.csv
 ```
 
-> **Pivot 1.** The plots advertised as "HNOCA benchmarks" were computed on
+> **Pivot 1.** The plots advertised as HNOCA were computed on
 > `make_synthetic_hnoca()` — a generator that mimics the obs schema but
 > invents counts. README claimed real numbers; nothing in the repo ever
-> touched Zenodo. So the leaderboards (T1 Linear Pearson 0.995, etc.) were
-> self-congratulatory smoke tests, not benchmarks.
+> touched Zenodo. The "0.995 Pearson on T1 Linear" was a self-congratulatory
+> smoke test, not a benchmark.
 
-> **Pivot 2.** Real HNOCA is 17.5 GB (cleaned) → 49 GB (full). Too big to just
-> "download and iterate". The `disease_atlas.h5ad` on the same record is only
-> 2 GB but is a disease sub-atlas — different scope. HNOCA-tools doesn't ship
-> a downsampled example. Need a different access pattern.
+> **Pivot 2.** Real HNOCA is 17.5 GB cleaned / 49 GB full. The
+> `disease_atlas.h5ad` (2 GB) is different scope. HNOCA-tools doesn't ship
+> an example. Needed a different access pattern.
 
-### 2) Modified Plan — stream just what we need
+## Modified Plan — stream just what we need
 
-a) **Data.** The cleaned h5ad is HDF5 with a chunked sparse-CSR `/X`. You can
-   open it remotely with `fsspec`+`h5py`, read only `/obs` to pick cells, and
-   read only those rows from `/X`. Total bandwidth: **~80 MB instead of 17.5
-   GB**.
-   - Filter to one region (default `Dorsal telencephalon`, 757k available).
-   - Stratify-sample 5k cells across timepoints.
-   - Rename obs columns to the repo's schema:
-     `annot_region_rev2 → region`, `organoid_age_days → age_days`,
-     `assay_differentiation → protocol`, `bio_sample → organoid_id`.
-
-b) **Experiment.** Same T1 / T2 / T5 with the same baselines, but on the real
-   `~4,430 cell × 36,842 gene` subset.
-
-c) **Figures / Metrics.** Same panels; the regenerated numbers are honest now
-   (table below).
-
-**Diagram (streamed):**
+Open the remote h5ad with `fsspec`+`h5py`, read only `/obs`, pick rows,
+read only those CSR rows. Bandwidth: **~80 MB instead of 17.5 GB**.
 
 ```
-Zenodo .h5ad  ──fsspec HTTP range reads──▶  h5py.File(remote, "r")
+Zenodo .h5ad  ──fsspec HTTP range reads──->  h5py.File(remote, "r")
 (17.5 GB                                          │
- cleanedmeta)                                     ├──▶ read /obs columns (~50 MB)
-                                                  ├──▶ pick row_idx (region + timepoint)
-                                                  └──▶ read /X CSR rows in bounded slabs
+ cleanedmeta)                                     ├──-> read /obs columns (~50 MB)
+                                                  ├──-> pick row_idx (region + timepoint)
+                                                  └──-> read /X CSR rows in bounded slabs
                                                           │
-                                                          ▼
+                                                          v
                                           data/hnoca_dt_subset.h5ad (~80 MB)
                                                           │
                                   ┌───────────────────────┴───────────────────────┐
-                                  ▼                                                ▼
+                                  v                                                v
                           explore_hnoca.py                                01_explore.py
                           (sectioned printout)                            (plots + leaderboards)
 ```
 
-> **Pivot 3.** Wired the real subset in. T1 immediately broke: it grouped by
-> `organoid_id`, but in HNOCA each `bio_sample` = one snapshot. **Only 1 of
-> 206 organoids had ≥2 timepoints.** That's a biology-shaped fact about the
-> dataset, not a bug in the loader: HNOCA pools cells across studies and the
-> time signal is *between* organoids of different ages, not *within*. Switched
-> T1 to group by `protocol` → adjacent pseudobulks within a protocol →
-> cohort-level trajectory. Now T1 has 13/16 protocols usable.
+> **Pivot 3.** Wired real data in. T1 broke — in HNOCA each `bio_sample` is
+> one snapshot. **Only 1/206 organoids had >=2 timepoints.** That's a
+> biology-shaped fact, not a bug: HNOCA pools across studies, so time
+> signal lives *between* organoids of different ages, not *within*.
+> Switched T1 to group by `protocol` → 13/16 protocols usable.
 
-**Real-data numbers (honest, after the fix):**
+Real-data leaderboard (honest after the fix) — table reproduced in 2a.
 
-| Task | Model | Metric | **Real HNOCA** | (Synthetic) |
-|---|---|---|---:|---:|
-| T1 | identity | Pearson | **0.48** | 0.974 |
-| T1 | pop_mean | Pearson | 0.46 | 0.807 |
-| T1 | linear | Pearson | **0.19** | 0.995 |
-| T1 | pop_mean | MSE | **0.26** | — |
-| T2 | logreg | accuracy | 0.52 | — |
-| T2 | logreg | macro-F1 | **0.16** | 0.385 |
-| T2 | knn | accuracy | 0.31 | — |
-| T5 | PC1 | Spearman | **0.25** | 0.874 |
+> **Pivot 4.** Re-read the repo name: `organoid-agent`. No agent. No `agent/`,
+> no LLM, no tool-calling, no OpenAI SDK. The repo was a benchmark
+> scaffold pretending to be an agent. Looked at
+> [mims-harvard/cellflow](https://github.com/mims-harvard/cellflow) and
+> [mims-harvard/medea](https://github.com/mims-harvard/medea) for the
+> reference shape.
 
-Takeaways: ridge **loses to identity** on T1 (over-fits 54 cohort pairs ×
-500 HVGs); PopMean has the best MSE (between-protocol variance dominates);
-PC1 on real data hits 0.25 vs synthetic's 0.87 because protocol/batch
-swamps the time axis in PC1. **These are exactly the gaps a foundation
-model should close** — and the synthetic data was hiding them.
-
-> **Pivot 4.** Re-read the repo name: `organoid-agent`. There is no agent.
-> No `agent/` directory, no LLM call, no tool-calling, no OpenAI SDK
-> anywhere. The repo is a benchmark scaffold pretending to be an agent.
-> Looked at [mims-harvard/cellflow](https://github.com/mims-harvard/cellflow)
-> as the reference for what an "agent that uses an ML model as a tool" should
-> look like.
-
-### 3) New Plan — cellflow-style agent layer
-
-a) **Data.** Same as Modified Plan (streamed subset).
-
-b) **Tool layer.** `agent/hnoca_model.py` — `HNOCAModel` loads the subset
-   once, fits log1p → top-2k HVG → 30-D PCA → kNN, and exposes four verbs.
-   **Every numeric answer comes from real cells**; the LLM is forbidden from
-   inventing.
-
-   | Tool | What it returns |
-   |---|---|
-   | `query_composition(protocol, age_min, age_max)` | Cell-type composition of cells matching a filter |
-   | `gene_expression_timecourse(gene, protocol)` | Mean log1p expression by age bin |
-   | `predict_composition_at_age(protocol, target_age_days)` | kNN-retrieved composition at nearby ages |
-   | `find_similar_cells(protocol, age_days, k)` | Latent-space neighbours: which protocols + cell types this query sits near |
-
-   Plus `describe_inputs()` so the system prompt is built from the *live*
-   valid protocols / cell types / age range — the LLM can't pick an invalid
-   protocol because the prompt only lists real ones.
-
-c) **Agent layer.** `agent/agent.py` — OpenAI SDK chat loop with
-   function-calling. Interactive REPL **or** one-shot:
-   `python -m agent.agent "What dominates Velasco day-100?"`. Works against
-   any OpenAI-compatible endpoint (set `OPENAI_BASE_URL`).
-
-d) **Figures / Metrics.** Same `01_explore.py` benchmark plots + annotated
-   transcripts in `demo/example_session.md`.
-
-**Diagram (current architecture):**
+## New Plan — cellflow / Medea-style agent layer
 
 ```
-User question  ──▶  OpenAI SDK chat  ──▶  tool call (JSON)  ──▶  HNOCAModel
+User question  ──->  OpenAI SDK chat  ──->  tool call (JSON)  ──->  HNOCAModel
 ("what cells in     (function-calling)    {"protocol":           │
  Velasco day-100?")                        "Velasco", ...}        │
                           ▲                                       │
-                          │                                       ▼
+                          │                                       v
                           │                              real HNOCA cells
                           │                              (data/hnoca_dt_subset.h5ad)
                           │                                       │
-                          │                                       ▼
+                          │                                       v
                           │                              composition / timecourse /
                           │                              neighbours (real numbers)
                           │                                       │
                           └───────────── tool result ◀────────────┘
                           │
-                          ▼
+                          v
                   biological narration
                   ("90% dorsal telencephalic neurons,
                    dominated by cortical pyramidal...")
 ```
 
-### Deferred (Phase 2)
+Current state of the agent layer:
 
-- T3 (primary-reference fidelity) — needs HNOCA-tools' per-cell similarity
-  scores; not in obs of the cleaned h5ad subset I streamed.
-- T4 (perturbation response) — needs a clean control-vs-treated split, which
-  isn't a first-class field in HNOCA (it's a development atlas, not a
-  perturbation screen).
-- Plug in a real foundation model (Geneformer / scGPT / UCE) as another
-  `BaselineModel`.
-- Project Paola's organoids into the HNOCA latent (HNOCA-tools `map_query`)
-  → flag (i) unmatched cell populations, (ii) trajectory deviations from the
-  closest atlas protocol.
+- 4 tools (`query_composition`, `gene_expression_timecourse`,
+  `predict_composition_at_age`, `find_similar_cells`) — all answer from
+  real cells.
+- OpenAI SDK chat loop with function-calling, system prompt built from
+  `describe_inputs()` so the LLM can only pick from real protocols /
+  ages / cell types.
+- `make agent` / `make demo` / `make plots` shortcuts.
+- README rewrite in cellflow's voice.
+
+## Roadmap to Q1/Q2 answers fully implemented
+
+| Step | Status | Notes |
+|---|---|---|
+| Stream real HNOCA subset | **done** | `data/hnoca_dt_subset.h5ad`, ~80 MB |
+| Regenerate plots from real cells | **done** | `plots/*.png`, honest numbers |
+| Agent layer with 4 tools | **done** | `agent/hnoca_model.py` |
+| Mirror cellflow's repo shape | **done** | Makefile, .env.example, demo/ |
+| Add Medea-style 3-module structure | **next** | research-planning, analysis, lit |
+| Plug Geneformer or scGPT as a tool | **next** | first foundation-model backbone |
+| Pull `sim_to_primary` for T3 | **next** | one-line addition to downloader |
+| T4 cross-protocol via CellFlow | **next** | needs CellFlow checkpoint |
+| T6 novel-cell detection bench | **next** | held-out-region construction |
+| T7 agent-vs-LLM QA bench | **next** | 200 NL questions + judge |
+| Tool ablation study | **next** | per TxAgent pattern |
+| Project Paola's organoids | **Phase 2** | wait until Arlotta presentation lands |
 
 ---
 
-## Understanding HNOCA
+# Appendix A — Understanding HNOCA
 
 **Headline.** Integrated transcriptomic atlas of human neural organoids:
-**~1.7M cells**, **36 datasets**, **26 differentiation protocols** (3 unguided
-+ 23 guided), organoid ages **day 7 → day 450**. Mapped to a curated primary
-developing-brain reference for fidelity scoring. Built with scanpy 1.9.3,
-integrated with scVI / scANVI, time-aware pseudotime via moscot OT.
+~1.7M cells, 36 datasets, 26 differentiation protocols, organoid ages day
+7 → 450. Mapped to a curated primary developing-brain reference for
+fidelity scoring. Built with scanpy 1.9.3, integrated with scVI / scANVI,
+time-aware pseudotime via moscot OT.
 
 **Files on Zenodo `14161275`:**
 
@@ -220,7 +462,7 @@ integrated with scVI / scANVI, time-aware pseudotime via moscot OT.
 | `hnoca_extended.h5ad` | 18.8 GB | Cleaned + extra embeddings |
 | `disease_atlas.h5ad` | 2.0 GB | Disease sub-atlas; different scope |
 
-**Real obs schema (selected — there are ~50 columns):**
+**Real obs schema (selected):**
 
 ```
 annot_region_rev2       Dorsal telencephalon / Ventral telencephalon / Medulla / ...
@@ -228,16 +470,15 @@ annot_level_2           Dorsal Telencephalic Neuron / NPC / IP / Astrocyte / OPC
 annot_level_3_rev2      Finer subdivision under level_2
 organoid_age_days       float, days post-induction (7 - 450)
 assay_differentiation   Full protocol citation (e.g. "Velasco, 2019 (doi: ...)")
-bio_sample              Organoid ID (≈ one organoid at one timepoint)
+bio_sample              Organoid ID (~one organoid at one timepoint)
 batch                   Sequencing batch
 publication             First-author short
-cell_type               cellxgene-harmonised label (e.g. "cerebral cortex pyramidal neuron")
+cell_type               cellxgene-harmonised label
 ```
 
 **X is sparse CSR**: `/X/data` 3.92 G float32, `/X/indices` 3.92 G int64,
-`/X/indptr` 1.77 M int64. Gzip-compressed, chunk size 59,810. This is what
-makes the streaming subset feasible — you only fetch the chunks containing
-your selected rows.
+`/X/indptr` 1.77 M int64. Gzip-compressed, chunk size 59,810. Streaming
+subsets works because HDF5 is random-access by chunk.
 
 **Region distribution (full atlas):**
 
@@ -249,311 +490,138 @@ Medulla                  144,802
 Cerebellum                99,577
 Thalamus                  73,377
 Pons                      54,739
-...
 ```
 
 **Our Dorsal-telencephalon subset (4,430 cells, 16 protocols, days 15–300):**
-
-```
-Cell type (cellxgene harmonised)                                 % of subset
-cerebral cortex pyramidal neuron                                       17.3%
-unknown                                                                14.1%
-radial glial cell                                                      13.3%
-neuroblast (sensu Vertebrata)                                          12.2%
-pyramidal neuron                                                       12.1%
-cerebral cortex neuron                                                  6.2%
-extratelencephalic-projecting glutamatergic cortical neuron             6.1%
-glutamatergic neuron                                                    3.8%
-(28 unique cell types total)
-
-annot_level_2 (coarse class):
-Dorsal Telencephalic Neuron                                            68.6%
-Dorsal Telencephalic NPC                                               29.8%
-Dorsal Telencephalic IP                                                 1.6%
-```
-
-Why this subset is a good benchmark substrate:
-
-- **Real time axis** (15–300 d) → T1 / T5 are well-posed.
-- **16 protocols** (Velasco, Lancaster, Pasca, Yoon, Watanabe, Quadrato,
-  Trujillo, Bhaduri, Miura, Andersen, Pellegrini, Esk, Huang, ...) →
-  out-of-protocol generalization is testable.
-- **Primary reference annotations** in the full atlas → T3 is possible later.
+top cell types in 2a above; `annot_level_2`: 68.6% Dorsal Telencephalic
+Neuron, 29.8% NPC, 1.6% IP.
 
 ---
 
-## Useful Commands
+# Appendix B — Useful Commands
 
-### Conda / env
-
+**Conda env:**
 ```bash
 conda create -n organoid-agent python=3.11 -y
 conda activate organoid-agent
 pip install -r requirements.txt
 ```
 
-### Streaming an h5ad over HTTPS (fsspec + h5py)
-
+**Streaming an h5ad over HTTPS (fsspec + h5py):**
 ```python
 import fsspec, h5py, aiohttp
 url = "https://zenodo.org/api/records/14161275/files/hnoca_cleanedmeta.h5ad/content"
 timeout = aiohttp.ClientTimeout(total=600, sock_read=300, sock_connect=60)
 fs = fsspec.filesystem("https", client_kwargs={"timeout": timeout})
-f = fs.open(url, mode="rb", block_size=8 * 1024 * 1024)   # 8 MB cache blocks
-hf = h5py.File(f, "r")                                    # remote, no full download
-list(hf.keys())                                           # ['X', 'obs', 'var', 'uns', ...]
-list(hf["obs"].keys())                                    # all obs columns
+f = fs.open(url, mode="rb", block_size=8 * 1024 * 1024)
+hf = h5py.File(f, "r")
+list(hf["obs"].keys())                           # all obs columns
 ```
 
-> Read a *categorical* obs column with `g['codes'][:]` + decoded `g['categories'][:]`.
-
-### Inspecting a CSR layout before reading
-
-```python
-for k in ['X/data', 'X/indices', 'X/indptr']:
-    d = hf[k]
-    print(k, d.shape, d.dtype, "chunks", d.chunks, "compression", d.compression)
-```
-
-Tells you how big the chunks are → how much you'll fetch per read.
-
-### GitHub from the CLI
-
-```bash
-gh api repos/OWNER/REPO/contributors --jq '.[] | "\(.login)\t\(.contributions)"'
-gh api repos/OWNER/REPO/stats/contributors                      # async recompute trigger
-gh api repos/OWNER/REPO/commits/<sha> --jq '.commit.author.name + " | " + .commit.message'
-```
-
-When a co-author trailer gets stuck in the sidebar UI: amend the commit to
-drop the trailer, force-push, hit `/stats/contributors` once or twice, wait
-~24 h for the widget cache.
-
-### Useful Python introspection on AnnData
+**AnnData introspection:**
 
 | Command | What it does |
 |---|---|
-| `adata` | One-line shape + obs/var/uns/obsm/obsp summary |
+| `adata` | Shape + obs/var/uns/obsm summary |
 | `adata.obs.columns.tolist()` | All cell-level metadata fields |
-| `adata.obs["region"].value_counts()` | Histogram a categorical column |
-| `adata.obs.groupby("protocol", observed=True)["age_days"].nunique()` | Time-coverage per protocol (this is the check that revealed Pivot 3) |
+| `adata.obs["region"].value_counts()` | Categorical histogram |
+| `adata.obs.groupby("protocol", observed=True)["age_days"].nunique()` | Time-coverage per protocol (revealed Pivot 3) |
 | `adata.X[0, :10].toarray()` | Peek at first cell's first 10 genes |
-| `adata.var_names.get_loc("NEUROD6")` | Gene-symbol → column index |
-| `adata.uns.keys()` | Run-level metadata (HVG, log1p params, neighbour graph, ...) |
 
-### Project-specific shortcuts (Makefile)
-
+**GitHub CLI:**
 ```bash
-make data        # stream the ~80 MB subset from Zenodo
-make explore     # sectioned printout of what's in the subset
-make plots       # regenerate plots/*.png from real cells
-make agent       # interactive REPL  (needs OPENAI_API_KEY)
+gh api repos/OWNER/REPO/contributors --jq '.[] | "\(.login)\t\(.contributions)"'
+gh api repos/OWNER/REPO/stats/contributors                    # async recompute trigger
+```
+
+**Makefile shortcuts:**
+```bash
+make data        # stream ~80 MB HNOCA subset
+make explore     # printed summary
+make plots       # regenerate plots/
+make agent       # interactive REPL (needs OPENAI_API_KEY)
 make demo        # one-shot agent question
-make test        # pytest sanity checks
+make test        # pytest sanity
 ```
 
 ---
 
-## How to reproduce this from scratch
+# Appendix C — How to reproduce from scratch
 
 1. **Clone.**
    ```bash
    git clone https://github.com/ds9-code/organoid-agent.git
    cd organoid-agent
    ```
-
 2. **Env.**
    ```bash
    conda create -n organoid-agent python=3.11 -y
    conda activate organoid-agent
    pip install -r requirements.txt
    ```
-
-3. **Get the data subset** (~80 MB, ~30 s on a decent connection).
+3. **Data subset (~80 MB).**
    ```bash
    python download_data.py
-   # = python scripts/download_hnoca_subset.py --region "Dorsal telencephalon" \
-   #       --n_cells 5000 --out data/hnoca_dt_subset.h5ad
    ```
-   - This streams the cleaned HNOCA atlas from Zenodo over HTTP range reads.
-     **You do not download 17.5 GB.** No HF token, no auth.
-   - If it stalls on a slab, retry — script has 3-attempt retry per slab but
-     occasional Zenodo hiccups happen.
-
-4. **Sanity-check what's in it.**
+4. **Sanity-check.**
    ```bash
-   python explore_hnoca.py     # 8 sectioned printouts: shape, X sparsity,
-                               # obs columns, protocols, ages, cell types,
-                               # var, uns
+   python explore_hnoca.py
    ```
-
-5. **Regenerate the plots.**
+5. **Regenerate plots.**
    ```bash
-   make plots                  # writes plots/*.png + results_long.csv +
-                               # results.json — real HNOCA numbers
+   make plots
    ```
-
-6. **(Optional) Run the agent.** Needs an OpenAI-style API key.
+6. **(Optional) Run the agent.**
    ```bash
-   cp .env.example .env        # fill in OPENAI_API_KEY (and optionally
-                               # OPENAI_BASE_URL / AGENT_MODEL)
-   make demo                   # one example question
-   make agent                  # interactive REPL
+   cp .env.example .env       # fill in OPENAI_API_KEY
+   make demo
+   make agent
    ```
 
-### For pushing changes (Github)
-
+To clone Medea as a reference:
 ```bash
-git status                                    # eyeball untracked vs gitignored
-git add <files>                               # prefer specific names over -A
-git commit -m "..."                           # one-liner if scope is small
-                                              # HEREDOC for multi-paragraph
-git push                                      # to existing remote
+git clone https://github.com/mims-harvard/medea.git
 ```
-
-`.env`, `data/*.h5ad`, `plots/*.png`, `plots/*.csv`, `plots/*.json`,
-`__pycache__/` are gitignored. **Check `git status --porcelain` before push** —
-once a secret is in a commit it's a pain to remove.
-
-If you want a clean co-author trailer (or to remove one):
-- Add: end the commit body with
-  `Co-Authored-By: Name <email@example.com>`
-- Remove from HEAD: `git commit --amend -m "..."` without the trailer, then
-  `git push --force-with-lease`. The sidebar contributor widget on GitHub
-  takes ~24 h to refresh even after the API is clean.
 
 ---
 
-## Project Notes p2
+# Appendix D — Open questions / things to bring up with the lab
 
-### Open questions
-
-1. **Which foundation model first?** Candidates: Geneformer (BERT-style,
-   gene-token), scGPT (auto-regressive, more flexible), scFoundation (large
-   pretrained), UCE (universal cell embedding). Geneformer is the simplest
-   pip install + `tokenize → embed → linear head`; probably the right first
-   pin so we get *some* leaderboard signal fast, then iterate.
-
-2. **Are the T1 numbers actually meaningful?** With group_key=`protocol`
-   we have only 13 protocols, → ~54 train pairs, 5 eval pairs. That's a
-   tiny eval set. **The Pearson 0.48 for identity is plausible but
-   high-variance.** Need to either bootstrap CIs or restrict to protocols
-   with denser timepoint coverage (Velasco has 8+ ages, Lancaster 6+, most
-   others have 2–3).
-
-3. **What should "novel cell state" mean for Paola's organoids?** Two
-   defensible operationalisations:
-   - **Latent-space outlier**: mean distance to k nearest HNOCA cells >
-     some percentile of intra-HNOCA distances.
-   - **Trajectory deviation**: predicted age (from a regressor trained on
-     HNOCA) ≠ actual culture age.
-
-   Need to pick one before we have data.
-
-4. **Cell-type label space is messy.** 28 fine labels in the subset; many
-   are nearly-synonymous (`cerebral cortex pyramidal neuron` vs
-   `pyramidal neuron`). T2's macro-F1 of 0.16 partly reflects this. The
-   `annot_level_2` coarse labels (3 classes for dorsal telencephalon) give
-   a cleaner T2 — should probably make `label_col` a config knob and
-   evaluate both.
-
-5. **Does CellFlow's flow-matching approach transfer to HNOCA?** CellFlow
-   was trained on **perturbation pairs** (control → treated). HNOCA has
-   **developmental trajectories** (young → old, same protocol). Different
-   structure. Worth thinking about whether the OT-based formulation works
-   here or if a simpler regression is more honest.
-
-### Things worth doing soon
-
-- Add `--label_col` to T2 so we can compare fine vs coarse cell-type F1.
-- Compute T1 with bootstrap CIs (n=500 resamples of held-out protocols).
-- Stream a second subset (Ventral telencephalon, ~158k available cells) →
-  test cross-region generalization.
-- Hook up Geneformer as a `BaselineModel`. The wrapper is mostly
-  `tokenize → embed → ridge head`.
-- T3: add the primary-reference similarity score column when streaming the
-  subset. (It's in the full atlas's obs but I didn't pull it the first time.)
-- T4: the only "perturbation-like" axis in HNOCA is *protocol* itself —
-  could frame T4 as "predict the composition shift between Velasco and
-  Lancaster at matched ages." Not a true perturbation but a real signal.
-
-### Things to bring up with the lab
-
-- Lock the first benchmark region. Dorsal telencephalon is the biggest and
-  best-annotated; sticking with it for v1 unless someone has a reason to
-  expand.
-- Time-course vs snapshot on Paola's side — **T1 / T5 need time-course**
-  cultures, **T2 / T3 work on snapshots**. What does Paola actually have?
-- Pick the first foundation model (Geneformer is my vote).
-- For T4: is there a planned perturbation arm in Paola's dataset, or are we
-  always operating on the protocol-as-perturbation framing?
+1. **Which foundation model first?** Geneformer is easiest (rank-based,
+   HF-hosted, one-line load); scGPT and UCE need more setup. I'd start
+   with Geneformer for v1.
+2. **Are T1 numbers real?** Only 54 train pairs × 500 HVGs at
+   `group_key=protocol`; eval set is tiny. Need bootstrap CIs.
+3. **Define "novel cell" operationally.** Options: (a) latent-space
+   outlier vs. HNOCA percentile, (b) trajectory deviation under matched
+   protocol. Need to pick before Paola data arrives.
+4. **Cell-type label space is messy.** 28 fine labels, many
+   near-synonymous; 14% labelled `unknown`. Use `annot_level_2` (coarse)
+   for T2 main result, fine for ablation.
+5. **CellFlow vs HNOCA structure mismatch.** CellFlow was trained on
+   perturbation pairs (control → treated). HNOCA has developmental
+   trajectories (young → old, same protocol). Will CellFlow's OT
+   formulation transfer, or do we need a simpler regressor?
+6. **What does Paola actually have?** Time-course vs. snapshot
+   organoids? T1 / T5 need time-course; T2 / T3 / T6 work on snapshots.
+7. **For T4:** is there a planned perturbation arm in Paola's dataset,
+   or are we always operating on the protocol-as-perturbation framing?
 
 ---
 
-## misc
+# Appendix E — misc surprises from real data
 
-- **Surprising finding from `explore_hnoca.py`**: 14% of cells in the Dorsal
-  telencephalon subset are labelled `"unknown"` in `cell_type` — second
-  most common class. That's not noise, that's a real "cellxgene didn't
-  harmonise this protocol's labels" gap. Worth flagging when reporting T2.
-- **Surprising finding from T5**: PC1 Spearman of 0.25 means **PC1 is not
-  primarily a time axis** in this subset. Either protocol or batch
-  dominates. A protocol-conditional PC1 (Spearman within each protocol,
-  then averaged) would be a much fairer baseline — added to the worth-doing
-  list.
-- **The HNOCA file structure trick**: `/obs` is small enough that you can
-  read every categorical column into memory in <30 s of HTTPS traffic.
-  That's the unlock — once you have all obs locally, you can pick exactly
-  which rows to fetch and never touch the full 17.5 GB.
-- **Why pop-mean wins MSE on T1**: when between-protocol variance >>
-  within-protocol-trajectory variance, the protocol mean is closer to any
-  held-out protocol than identity is. Tells you the model needs to condition
-  on protocol identity, not just on `x_t`.
-- **`Co-Authored-By` trailer thing**: when you commit with a trailer naming
-  an email that's claimed by a GitHub account, that account shows up in the
-  contributors graph. Amending the commit + force-pushing removes them from
-  the live API immediately, but the right-sidebar widget cache takes hours
-  to a day. The `/graphs/contributors` page hits the live API and updates
-  faster.
-- **HuggingFace is overkill for HNOCA**: cellflow uses HF for the iNeurons
-  dataset because it's gated. HNOCA on Zenodo is **public**, so we never
-  need an `HF_TOKEN`. The `.env.example` keeps the OpenAI-related vars only.
-
----
-
-## Repo layout (current)
-
-```
-organoid-agent/
-├── README.md                 # cellflow-style: example session, How it works, Setup
-├── Makefile                  # data / explore / plots / agent / demo / test
-├── pyproject.toml
-├── requirements.txt
-├── .env.example              # OPENAI_API_KEY / OPENAI_BASE_URL / AGENT_MODEL
-├── download_data.py          # one-call subset fetcher
-├── explore_hnoca.py          # sectioned printout of the real subset
-├── agent/
-│   ├── __init__.py
-│   ├── hnoca_model.py        # the tool — 4 verbs over real HNOCA cells
-│   └── agent.py              # OpenAI SDK chat loop with function-calling
-├── scripts/
-│   └── download_hnoca_subset.py   # streaming HTTP range reads (fsspec + h5py)
-├── src/
-│   ├── data/{hnoca,synthetic}.py
-│   ├── tasks/{base,t1_next_timepoint,t2_celltype_oop,t5_pseudotime}.py
-│   ├── models/{base,baselines}.py
-│   ├── eval/{metrics,runner}.py
-│   └── plot/figures.py
-├── notebooks/01_explore.py   # generates plots/ from the real subset
-├── plots/                    # PNGs + CSV/JSON (gitignored)
-├── data/                     # downloaded subsets (gitignored)
-├── configs/                  # YAML configs per task slice
-├── docs/
-│   ├── hnoca_summary.md
-│   ├── tasks.md
-│   ├── decisions.md
-│   ├── week1_summary.md
-│   └── project_notes.md      ← this file
-├── demo/example_session.md   # annotated agent transcript
-└── tests/test_smoke.py       # pytest sanity checks (still on synthetic, by design)
-```
+- **14% of cells in Dorsal-telencephalon subset are labelled `"unknown"`**
+  in `cell_type` — second most common class. Not noise, a real gap in
+  cellxgene's harmonisation. Flag when reporting T2.
+- **PC1 Spearman 0.25** means PC1 is *not* primarily a time axis in this
+  subset — protocol/batch dominates. A protocol-conditional PC1 (Spearman
+  within protocol, then averaged) is a fairer baseline.
+- **The `/obs` streaming trick.** `obs` is small enough to read every
+  categorical column into memory in <30s of HTTPS traffic; that's the
+  unlock that makes the 80 MB subset possible.
+- **PopMean wins MSE on T1** because between-protocol variance
+  dominates within-protocol trajectory variance — tells you the model
+  needs to condition on protocol identity, not just on `x_t`.
+- **HuggingFace is overkill for HNOCA**: Zenodo is public, no `HF_TOKEN`
+  needed. `.env.example` keeps OpenAI-related vars only.
