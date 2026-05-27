@@ -21,7 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]   # organoid_agent/tool_space -> repo root
 DEFAULT_DATA = PROJECT_ROOT / "data" / "hnoca_dt_subset.h5ad"
 
 

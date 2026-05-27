@@ -31,10 +31,13 @@ plots:
 	PYTHONPATH=. $(PYTHON) notebooks/01_explore.py
 
 agent:
-	$(PYTHON) -m agent.agent
+	PYTHONPATH=. $(PYTHON) -m organoid_agent
 
 demo:
-	$(PYTHON) -m agent.agent "$(DEMO_QUESTION)"
+	PYTHONPATH=. $(PYTHON) -m organoid_agent "$(DEMO_QUESTION)"
+
+demo-plan:
+	PYTHONPATH=. $(PYTHON) -m organoid_agent --cite "$(DEMO_QUESTION)"
 
 test:
 	$(PYTHON) -m pytest tests/ -q
@@ -47,3 +50,6 @@ eval:
 
 eval-no-tools:
 	PYTHONPATH=. $(PYTHON) -m benchmarks.eval --mode no_tools
+
+eval-with-plan:
+	PYTHONPATH=. $(PYTHON) -m benchmarks.eval --mode agent_plan

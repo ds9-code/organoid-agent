@@ -1,0 +1,99 @@
+{
+  "tools": [
+    {
+      "name": "query_composition",
+      "tool_module": "hnoca",
+      "description": "Return the cell-type composition of REAL HNOCA cells matching a filter on protocol and/or age range. Use for 'what cells are in protocol X at age Y?' questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "protocol": {"type": "string", "description": "Protocol short name, e.g. 'Velasco'"},
+          "age_min": {"type": "number"},
+          "age_max": {"type": "number"}
+        }
+      }
+    },
+    {
+      "name": "gene_expression_timecourse",
+      "tool_module": "hnoca",
+      "description": "Mean log1p expression of one gene across age bins, optionally restricted to a single protocol. Use for 'how does gene X change with organoid age?' questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "gene": {"type": "string", "description": "Exact gene symbol, e.g. 'NEUROD6'"},
+          "protocol": {"type": "string"}
+        },
+        "required": ["gene"]
+      }
+    },
+    {
+      "name": "predict_composition_at_age",
+      "tool_module": "hnoca",
+      "description": "Predict cell-type composition for a (protocol, target age) pair by kNN retrieval over real HNOCA cells at the nearest available ages. Use for 'what should my Velasco day-100 organoid look like?' questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "protocol": {"type": "string"},
+          "target_age_days": {"type": "number"},
+          "k_neighbors": {"type": "integer"}
+        },
+        "required": ["protocol", "target_age_days"]
+      }
+    },
+    {
+      "name": "find_similar_cells",
+      "tool_module": "hnoca",
+      "description": "Given a (protocol, age) query, return what dominates its k nearest neighbours in the atlas's 30-D PCA latent space — which protocols and cell types it sits near. The analogue of 'projecting a sample into the atlas to see what it looks like'.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "protocol": {"type": "string"},
+          "age_days": {"type": "number"},
+          "k": {"type": "integer"}
+        },
+        "required": ["protocol", "age_days"]
+      }
+    },
+    {
+      "name": "classify_cell_type",
+      "tool_module": "hnoca",
+      "description": "Run a HNOCA-trained cell-type classifier (logreg or kNN over a 30-D PCA latent) on cells of a (protocol, age) cohort. Returns predicted composition + per-label confidence.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "protocol": {"type": "string"},
+          "age_days": {"type": "number"},
+          "granularity": {"type": "string", "description": "'fine' or 'coarse'"},
+          "model": {"type": "string", "description": "'logreg' or 'knn'"},
+          "n_cells": {"type": "integer"}
+        },
+        "required": ["protocol", "age_days"]
+      }
+    },
+    {
+      "name": "pubmed_search",
+      "tool_module": "pubmed",
+      "description": "Search PubMed via NCBI E-utilities. Returns up to retmax records: {pmid, title, year, journal}. Use this for any literature question — do NOT invent PMIDs.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "retmax": {"type": "integer", "description": "Max records, default 10"}
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "fetch_abstract",
+      "tool_module": "pubmed",
+      "description": "Fetch the abstract text for one PubMed PMID via NCBI E-utilities. Returns {pmid, title, year, journal, abstract}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pmid": {"type": "string"}
+        },
+        "required": ["pmid"]
+      }
+    }
+  ]
+}

@@ -36,8 +36,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.hnoca_model import HNOCAModel  # noqa: E402
-from agent.agent import TOOLS, build_system_prompt  # noqa: E402
+from organoid_agent import (  # noqa: E402
+    AgentLLM, LLMConfig,
+    HNOCAModel, PubMedTool,
+    Analysis, ResearchPlanning,
+)
 
 
 # --------------------------------------------------------------- #
@@ -165,90 +168,15 @@ def grade(answer_text: str, expected: Any, tol: float | None) -> tuple[bool, str
 
 
 # --------------------------------------------------------------- #
-# Agent runner                                                    #
-# --------------------------------------------------------------- #
-def run_question(
-    client,
-    agent_model: str,
-    hnoca: HNOCAModel | None,
-    system_prompt: str,
-    question: str,
-    mode: str,
-) -> dict:
-    """Run one question. Returns dict with `answer`, `tool_calls`, `error`."""
-    tools = TOOLS if mode == "agent" else None
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
-    ]
-    tool_calls_log: list[dict] = []
-    error: str | None = None
-    final_answer = ""
-
-    try:
-        # bounded loop: at most 5 tool round-trips
-        for _ in range(5):
-            kwargs = {"model": agent_model, "messages": messages}
-            if tools is not None:
-                kwargs["tools"] = tools
-            resp = client.chat.completions.create(**kwargs)
-            msg = resp.choices[0].message
-            entry: dict = {"role": "assistant", "content": msg.content or ""}
-            if getattr(msg, "tool_calls", None):
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.id, "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in msg.tool_calls
-                ]
-            messages.append(entry)
-
-            if msg.content:
-                final_answer = msg.content
-
-            if not getattr(msg, "tool_calls", None):
-                break
-
-            for tc in msg.tool_calls:
-                name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls_log.append({"name": name, "args": args})
-                if hnoca is None:
-                    result = {"error": "tool calls disabled in no_tools mode"}
-                else:
-                    fn = getattr(hnoca, name, None)
-                    if fn is None:
-                        result = {"error": f"unknown tool {name!r}"}
-                    else:
-                        try:
-                            result = fn(**args)
-                        except Exception as exc:
-                            result = {"error": f"{type(exc).__name__}: {exc}"}
-                messages.append({
-                    "role": "tool", "tool_call_id": tc.id,
-                    "content": json.dumps(result, default=str)[:4000],
-                })
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-
-    return {
-        "answer": final_answer.strip(),
-        "tool_calls": tool_calls_log,
-        "error": error,
-    }
-
-
-# --------------------------------------------------------------- #
 # Main                                                            #
 # --------------------------------------------------------------- #
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--questions", default="benchmarks/questions/atlas_recall.yaml")
-    ap.add_argument("--mode", choices=["agent", "no_tools"], default="agent")
+    ap.add_argument("--mode", choices=["agent", "no_tools", "agent_plan"], default="agent",
+                    help="agent = analysis-module with tools; "
+                         "no_tools = analysis-module with tools disabled (LLM-only baseline); "
+                         "agent_plan = research-planning + analysis (full pipeline minus literature)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--limit", type=int, default=None, help="run only first N questions")
     args = ap.parse_args()
@@ -259,19 +187,10 @@ def main() -> int:
     except ImportError:
         pass
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    if not os.environ.get("OPENAI_API_KEY"):
         print("ERROR: OPENAI_API_KEY not set", file=sys.stderr); return 1
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("ERROR: pip install openai", file=sys.stderr); return 1
 
-    base_url = os.environ.get("OPENAI_BASE_URL") or None
-    agent_model = os.environ.get("AGENT_MODEL", "gpt-4o")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    print(f"LLM: {agent_model!r} via {base_url or 'api.openai.com'}")
-
+    llm = AgentLLM(LLMConfig(temperature=0.4), verbose=True)
     print(f"Loading questions from {args.questions} ...")
     with open(args.questions) as f:
         spec = yaml.safe_load(f)
@@ -279,17 +198,12 @@ def main() -> int:
     if args.limit:
         questions = questions[: args.limit]
 
-    if args.mode == "agent":
-        hnoca = HNOCAModel(verbose=True)
-        system_prompt = build_system_prompt(hnoca)
-    else:
-        hnoca = None
-        system_prompt = (
-            "You are an expert in human neural organoid biology. Answer the user's "
-            "questions about HNOCA, the Human Neural Organoid Cell Atlas. Use only "
-            "what you know from training — no tools are available. Give concrete, "
-            "quantitative answers when asked."
-        )
+    # Always load HNOCA — it's needed for the Analysis module's system prompt
+    # (describe_inputs) even in no_tools mode.
+    hnoca = HNOCAModel(verbose=True)
+    pubmed = PubMedTool()
+    analysis = Analysis(llm, hnoca, pubmed=pubmed, verbose=False)
+    planning = ResearchPlanning(llm, verbose=False) if args.mode == "agent_plan" else None
 
     print(f"\nRunning {len(questions)} questions in mode={args.mode!r} ...\n")
 
@@ -304,18 +218,28 @@ def main() -> int:
 
         print(f"--- {qid} ---")
         print(f"Q: {question}")
-        result = run_question(client, agent_model, hnoca, system_prompt, question, args.mode)
-        answer = result["answer"]
+
+        plan_text = None
+        if planning is not None:
+            plan = planning(question)
+            plan_text = plan.as_text()
+
+        result = analysis.run(
+            question,
+            research_plan=plan_text,
+            use_tools=(args.mode != "no_tools"),
+        )
+        answer = result.answer
         print(f"A: {answer[:300]}{'...' if len(answer) > 300 else ''}")
-        if result["tool_calls"]:
-            print(f"   tools used: {[t['name'] for t in result['tool_calls']]}")
-        if result["error"]:
-            print(f"   ERROR: {result['error']}")
+        if result.tool_calls:
+            print(f"   tools used: {[t['name'] for t in result.tool_calls]}")
+        if result.error:
+            print(f"   ERROR: {result.error}")
 
         ok, detail = grade(answer, expected, tol)
         tool_called_correctly = (
             (expected_tool is None)
-            or any(tc["name"] == expected_tool for tc in result["tool_calls"])
+            or any(tc["name"] == expected_tool for tc in result.tool_calls)
         )
         n_pass += int(ok)
         print(f"   graded: {'PASS' if ok else 'FAIL'}  ({detail})")
@@ -328,12 +252,12 @@ def main() -> int:
             "question": question,
             "expected_answer": json.dumps(expected, default=str),
             "expected_tool": expected_tool or "",
-            "tool_calls": "|".join(tc["name"] for tc in result["tool_calls"]),
+            "tool_calls": "|".join(tc["name"] for tc in result.tool_calls),
             "tool_match": tool_called_correctly,
             "answer": answer,
             "pass": ok,
             "grade_detail": detail,
-            "error": result["error"] or "",
+            "error": result.error or "",
         })
 
     # write csv
