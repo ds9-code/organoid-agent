@@ -1,0 +1,104 @@
+questions:
+- id: A1
+  question: What are the top 3 cell types in Velasco-protocol organoids between day
+    80 and day 120, by fraction?
+  expected_tool: query_composition
+  expected_answer:
+    cerebral cortex pyramidal neuron: 0.433
+    extratelencephalic-projecting glutamatergic cortical neuron: 0.231
+    pyramidal neuron: 0.189
+  tolerance: 0.05
+  notes: n_cells in filter = 889
+- id: A2
+  question: Across the entire HNOCA dorsal-telencephalon subset, what fraction of
+    cells are labelled 'radial glial cell'?
+  expected_tool: query_composition
+  expected_answer: 0.1327
+  tolerance: 0.01
+  notes: ''
+- id: A3
+  question: How many distinct cell-type labels exist in the HNOCA dorsal-telencephalon
+    subset, and what fraction of cells are labelled 'unknown'?
+  expected_tool: describe_inputs
+  expected_answer:
+    n_labels: 28
+    frac_unknown: 0.1413
+  tolerance: 0.01
+  notes: ''
+- id: A4
+  question: What is the dominant coarse cell class (annot_level_2) in the HNOCA dorsal-telencephalon
+    subset, and what fraction of cells does it cover?
+  expected_tool: query_composition
+  expected_answer:
+    label: Dorsal Telencephalic Neuron
+    frac: 0.6856
+  tolerance: 0.02
+  notes: ''
+- id: A5
+  question: How many distinct organoid differentiation protocols are represented in
+    the HNOCA dorsal-telencephalon subset?
+  expected_tool: describe_inputs
+  expected_answer: 15
+  tolerance: 0
+  notes: ''
+- id: A6
+  question: Which protocol contributes the most cells to the HNOCA dorsal-telencephalon
+    subset, and how many cells does it contribute?
+  expected_tool: query_composition
+  expected_answer:
+    protocol: Velasco
+    n_cells: 2414
+  tolerance: null
+  notes: categorical + integer
+- id: A7
+  question: What is the range of organoid ages (in days) covered by the HNOCA dorsal-telencephalon
+    subset?
+  expected_tool: describe_inputs
+  expected_answer:
+    min_days: 15
+    max_days: 300
+  tolerance: 0
+  notes: ''
+- id: A8
+  question: Across the entire HNOCA dorsal-telencephalon subset, in which age range
+    (days) does mean log1p expression of NEUROD6 peak?
+  expected_tool: gene_expression_timecourse
+  expected_answer:
+    peak_age_bin: 86-121d
+    peak_log1p_expression: 1.63
+  tolerance: 0.2
+  notes: ''
+- id: A9
+  question: In the HNOCA dorsal-telencephalon subset, does VIM (radial-glia marker)
+    expression decrease and DCX (immature-neuron marker) expression increase between
+    day 30 and day 150?
+  expected_tool: gene_expression_timecourse
+  expected_answer:
+    vim_decreases_with_age: true
+    dcx_increases_with_age: true
+    vim_d30: 1.9
+    vim_d150: 0.69
+    dcx_d30: 0.77
+    dcx_d150: 1.26
+  tolerance: null
+  notes: qualitative answers about direction of change
+- id: A10
+  question: How many organoids (bio_samples) in the HNOCA dorsal-telencephalon subset
+    are sampled at two or more distinct timepoints, out of how many total organoids?
+  expected_tool: null
+  expected_answer:
+    multi_timepoint: 1
+    total_organoids: 206
+  tolerance: 0
+  notes: 'This is a known structural fact about HNOCA: each bio_sample is typically
+    one snapshot.'
+- id: A11
+  question: If you classify Velasco-protocol cells at day 100 using the HNOCA-trained
+    coarse-label classifier, what is the predicted fraction of 'Dorsal Telencephalic
+    Neuron'?
+  expected_tool: classify_cell_type
+  expected_answer:
+    label: Dorsal Telencephalic Neuron
+    min_fraction: 0.75
+  tolerance: null
+  notes: "Floor only \u2014 accept if predicted fraction is at least 0.75."

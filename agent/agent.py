@@ -103,6 +103,37 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "classify_cell_type",
+            "description": (
+                "Run a HNOCA-trained cell-type classifier (logistic regression "
+                "or kNN over a 30-D PCA latent) on cells of a (protocol, age) "
+                "cohort, and return the predicted cell-type composition + "
+                "per-label confidence. Use this for 'what cell types would I "
+                "predict in protocol X at age Y?' or 'how confident is the "
+                "classifier on these cells?' questions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "protocol": {"type": "string"},
+                    "age_days": {"type": "number"},
+                    "granularity": {
+                        "type": "string",
+                        "description": "'fine' (28 cell types) or 'coarse' (annot_level_2)",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "'logreg' or 'knn' (k=15)",
+                    },
+                    "n_cells": {"type": "integer"},
+                },
+                "required": ["protocol", "age_days"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_similar_cells",
             "description": (
                 "Given a (protocol, age) query, return what dominates its k nearest "

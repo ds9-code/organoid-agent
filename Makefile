@@ -10,7 +10,7 @@
 PYTHON ?= python
 DEMO_QUESTION ?= What cells dominate a Velasco day-100 cortical organoid?
 
-.PHONY: help data explore plots demo agent test
+.PHONY: help data explore plots demo agent test eval eval-no-tools build-questions
 
 help:
 	@echo "Targets:"
@@ -38,3 +38,12 @@ demo:
 
 test:
 	$(PYTHON) -m pytest tests/ -q
+
+build-questions:
+	PYTHONPATH=. $(PYTHON) benchmarks/build_atlas_recall.py
+
+eval:
+	PYTHONPATH=. $(PYTHON) -m benchmarks.eval --mode agent
+
+eval-no-tools:
+	PYTHONPATH=. $(PYTHON) -m benchmarks.eval --mode no_tools
