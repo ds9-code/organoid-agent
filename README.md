@@ -1,57 +1,128 @@
 # Organoid Agent
 
-A multi-module AI agent for human-neural-organoid biology, modelled on
-[**Medea**](https://github.com/mims-harvard/medea) (Sui, Li, …, Zitnik
-bioRxiv 2026) and powered by **Hermes-4** running locally via Ollama
-(no API keys, no recurring cost). Drop-in compatible with any OpenAI-style
-endpoint — OpenAI, OpenRouter, Nous Portal, Azure — via two env-vars.
+**The goal:** build an LLM-powered agent that can do science on brain
+organoids — answer "what would my organoid look like?" and "is this
+patient organoid abnormal?" type questions by calling tools, not by
+guessing from training data — and **benchmark it on a defined set of
+prediction tasks** so we can show it beats frontier LLMs before moving
+to private Arlotta-Lab data.
 
-Three collaborating modules — Research Planning, Analysis, Literature
-Reasoning — that orchestrate tool calls against the
-[**Human Neural Organoid Cell Atlas**](https://www.nature.com/articles/s41586-024-08172-8)
-(HNOCA, He et al. *Nature* 2024) and PubMed to answer organoid-biology
-questions. Every quantitative claim is grounded in a tool return: the LLM
-is never allowed to invent numbers, gene-expression values, or PMIDs.
+Modelled on [**Medea**](https://github.com/mims-harvard/medea) (Sui, Li,
+…, Zitnik, bioRxiv 2026). Powered by **Hermes-4** running locally via
+Ollama — no API keys, no recurring cost. Drop-in compatible with any
+OpenAI-style endpoint (OpenAI, OpenRouter, Nous Portal, Azure) via
+two env-vars.
 
 ```
-You: What cells dominate a Velasco day-100 cortical organoid?
+hermes -z "What cells dominate a Velasco day-100 cortical organoid?"
 
-[ResearchPlanning] tool_category=atlas_query tools=['query_composition']
-  -> calling query_composition({"protocol": "Velasco", "age_min": 80, "age_max": 120})
+  -> calling mcp_organoid_agent_query_composition({
+       "protocol": "Velasco", "age_min": 80, "age_max": 120
+     })
 
-Agent: ~91% dorsal-telencephalic neurons (real HNOCA cells, n=889 across 42
-       organoids in this window) — dominated by cerebral-cortex pyramidal
-       (43.3%), extratelencephalic-projecting glutamatergic cortical
-       (23.1%), and pyramidal (18.9%) sub-identities, with a residual ~4%
-       radial-glia pool. Consistent with mid-stage Velasco-protocol
-       cortical organoids being mostly post-mitotic deep-layer neurons.
+~91% dorsal-telencephalic neurons (real HNOCA cells, n=889 across 42
+organoids in this window) — dominated by cerebral-cortex pyramidal
+(43.3%), extratelencephalic-projecting glutamatergic cortical (23.1%),
+and pyramidal (18.9%) sub-identities. Consistent with mid-stage
+Velasco-protocol cortical organoids being mostly post-mitotic deep-
+layer neurons.
 ```
 
-See [`demo/example_session.md`](demo/example_session.md) for a longer
-annotated transcript, or `make demo` once set up.
+---
 
-## Architecture
+## The benchmark — what we're actually evaluating
+
+The agent has to be measured against something. Our task spec is in
+[`docs/project_notes.md`](docs/project_notes.md) (and the lab's working
+spreadsheet). 15 candidate tasks in total; 5 of them are evaluable today
+on real HNOCA data alone.
+
+| ID | Task | What we measure | Status |
+|---|---|---|---|
+| **T2** | Cell-type annotation from expression | macro-F1 (held-out cells) | ✅ implemented |
+| **T3** | Cell-type composition shift over time (within protocol) | KL divergence on proportion vectors | ✅ implemented |
+| **T8** | Out-of-protocol cell-type generalisation | macro-F1 (held-out protocols) | ✅ implemented |
+| **T10** | Cross-protocol composition transfer (Velasco → Lancaster) | KL on composition | ✅ implemented |
+| **T11** | Novel-cell detection (atlas mapping) | AUROC | ✅ implemented |
+| T1, T4, T7 | Donor-growth / neurotoxicity / fate-potential (Chimeroid) | Spearman, KL | needs Chimeroid SCP2609 download |
+| T5 | Transcriptional age | MAE + Pearson on age in days | needs lab-internal long-term data |
+| T6 | Survival under media conditions | MAE on functional readouts | needs lab-internal APM/CDM4 data |
+| T9 | Primary-reference fidelity | Spearman vs HNOCA's published score | needs Braun atlas |
+| T12 | Stress-signature detection | AUROC | needs Bhaduri 2020 |
+| T13 | Disease-class classification | macro-F1 | needs Gleeson NDD biobank |
+| T14 | CRISPR-perturbation vulnerability | Spearman rank | needs CHOOSE GSE228882 |
+| T15 | Morphogen → regional fate | KL divergence | needs Amin/Pasca GSE269308 |
+
+### Run the benchmark
+
+```bash
+make eval-tasks            # runs T2, T3, T8, T10, T11
+make eval-t02              # just T2
+make eval-t11              # just T11   (and so on)
+```
+
+Each writes a JSON of per-predictor metrics to `benchmarks/results/`
+and prints a markdown table to stdout. **No LLM in the loop for these**
+— they're pure-Python ML evaluations of the tools, because that's the
+right shape for measuring predictive performance independently of which
+agent layer is on top.
+
+### First-run baseline numbers (logreg + kNN on PCA-30, no foundation model yet)
+
+| Task | Best baseline | Score | What it tells us |
+|---|---|---:|---|
+| T2 (coarse, 3-class) | logreg | macro-F1 = **0.90** | Already saturated. |
+| T2 (fine, 28-class) | logreg | macro-F1 = **0.47** | Real headroom for a foundation model. |
+| T8 (fine, OOP) | logreg | macro-F1 = **0.12** | **0.35 drop vs T2** — classifier learns protocol-specific quirks, not biology. |
+| T11 | kNN-distance k=5 | AUROC = **0.88** | Hits ≥ 0.85 target from the project notes. |
+| T3 | pop-mean | mean KL = **0.16** | Identity baseline at 0.72 — composition really does change with age. |
+| T10 (Velasco→Lancaster) | age-matched target mean | mean KL = **0.09** | Clear headroom for CellFlow / FM-conditioned predictors. |
+
+These are what a foundation-model wrapper (Geneformer / scGPT / UCE)
+has to beat to be worth shipping.
+
+---
+
+## The agent
+
+For interactive use ("ask in English, get an answer grounded in real
+HNOCA cells") the same tools are exposed via:
+
+1. **A Python orchestration package** (`organoid_agent/`) modelled on
+   Medea's 3-module design.
+2. **An MCP server** (`organoid_agent/mcp_server.py`) so Hermes-CLI /
+   Claude Desktop / Cursor / Zed can call the tools natively.
+
+Both share the same `tool_space/` (HNOCAModel + PubMedTool) and the
+same LLM backbone (Hermes-4-14B by default, swappable). The benchmark
+numbers above don't depend on which agent layer is on top — they
+measure the tools.
+
+### Architecture
 
 | Module | File | Role |
 |---|---|---|
-| **Research Planning** | [`organoid_agent/modules/research_planning.py`](organoid_agent/modules/research_planning.py) | Restates the question concretely; identifies which tool category should answer it; surfaces caveats. Produces a plan but does not call tools. |
-| **Analysis** | [`organoid_agent/modules/analysis.py`](organoid_agent/modules/analysis.py) | The tool-calling chat loop. Calls HNOCA / PubMed tools, observes their returns, narrates a biologically grounded answer. |
-| **Literature Reasoning** | [`organoid_agent/modules/literature_reasoning.py`](organoid_agent/modules/literature_reasoning.py) | Given a factual claim, finds PubMed papers that support it and pulls the single best supporting sentence from each abstract. Used for citation-grounding. |
-| **LLM client** | [`organoid_agent/modules/agent_llms.py`](organoid_agent/modules/agent_llms.py) | Pluggable OpenAI-compatible chat client. Default: Hermes-4 via Nous Portal; override `OPENAI_BASE_URL` for any other endpoint. |
+| **Research Planning** | [`organoid_agent/modules/research_planning.py`](organoid_agent/modules/research_planning.py) | Restates the question, picks a tool category, surfaces caveats. No tools called. |
+| **Analysis** | [`organoid_agent/modules/analysis.py`](organoid_agent/modules/analysis.py) | Tool-calling chat loop. Narrates biologically grounded answers. |
+| **Literature Reasoning** | [`organoid_agent/modules/literature_reasoning.py`](organoid_agent/modules/literature_reasoning.py) | PubMed-grounded citation pulling per claim. |
+| **LLM client** | [`organoid_agent/modules/agent_llms.py`](organoid_agent/modules/agent_llms.py) | Pluggable OpenAI-compatible client. Default: local Hermes-4-14B via Ollama. |
+| **MCP server** | [`organoid_agent/mcp_server.py`](organoid_agent/mcp_server.py) | Exposes the tool space to Hermes-CLI and any other MCP client. |
 
-## Tool space
+### Tool space
 
-| Tool | What it does |
-|---|---|
-| `query_composition` | Cell-type composition of HNOCA cells matching a protocol / age filter |
-| `gene_expression_timecourse` | Mean log1p expression of one gene by age bin |
-| `predict_composition_at_age` | kNN-retrieved composition at the nearest available ages |
-| `find_similar_cells` | Latent-space neighbours: which protocols + cell types this query sits near |
-| `classify_cell_type` | HNOCA-trained logreg / kNN classifier (fine or coarse labels) |
-| `pubmed_search` | NCBI E-utilities PubMed search |
-| `fetch_abstract` | NCBI E-utilities abstract fetch by PMID |
+| Tool | Used by which task | What it does |
+|---|---|---|
+| `query_composition` | T2 (agent demo), T11 (agent demo) | Composition of cells matching a protocol / age filter |
+| `gene_expression_timecourse` | (atlas-recall demos) | Mean log1p expression of one gene by age bin |
+| `predict_composition_at_age` | T3, T10 | kNN-retrieved composition at nearest available ages |
+| `find_similar_cells` | T11 | Latent-space neighbours — which atlas cells this query sits near |
+| `classify_cell_type` | T2, T8 | HNOCA-trained logreg / kNN classifier |
+| `pubmed_search` | citation grounding (future) | NCBI PubMed search |
+| `fetch_abstract` | citation grounding (future) | NCBI abstract fetch by PMID |
 
 All tools answer from real data — never the LLM's parametric memory.
+
+---
 
 ## Setup
 
@@ -61,90 +132,47 @@ conda create -n organoid-agent python=3.11 -y
 conda activate organoid-agent
 pip install -r requirements.txt
 
-# 2. Local LLM backbone — Hermes-4-14B via Ollama (free, ~9 GB on disk)
-brew install ollama                                                                 # one-time
-brew services start ollama                                                          # one-time
-ollama pull hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M                   # ~9 GB
-# (no API key needed; defaults in organoid_agent/modules/agent_llms.py point here)
+# 2. Local LLM backbone — Hermes-4-14B via Ollama (~9 GB, free)
+brew install ollama
+brew services start ollama
+ollama pull hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M
 
 # 3. Real HNOCA subset (~80 MB; streamed from Zenodo via HTTP range reads)
 make data
 ```
 
-For a different backbone — Nous Portal Hermes-4-405B, OpenAI GPT-4o,
-OpenRouter, etc. — see the alternative blocks in `.env.example`.
+For a different backbone (Nous Portal / OpenAI / OpenRouter), see the
+alternative blocks in `.env.example`.
 
-There's a Makefile with shortcuts: `make data / explore / plots / agent /
-demo / eval / eval-no-tools / eval-with-plan / test`.
-
-## Run
+## Run the benchmark
 
 ```bash
-make agent       # interactive REPL — the full 3-module pipeline
+make eval-tasks            # all 5 implemented per-task evals (T2 T3 T8 T10 T11)
+make eval-t02              # just T2 (cell-type annotation, held-out)
+make eval-t11              # just T11 (novel-cell detection, AUROC)
+make eval-t08              # just T8 (out-of-protocol generalisation)
+make eval-t03              # just T3 (composition shift over time)
+make eval-t10              # just T10 (cross-protocol transfer)
+```
+
+These are the **task evaluations** the project is being measured by.
+Pure Python. No LLM call. Each writes timestamped JSON to
+`benchmarks/results/` (gitignored).
+
+## Run the agent (Python)
+
+```bash
+make agent       # interactive REPL — 3-module pipeline
 make demo        # one-shot question
-make eval        # benchmark on 11 atlas-recall questions
+make eval        # the 11-question atlas-recall LLM-graded benchmark
+make eval-no-tools   # frontier-LLM baseline (same LLM, no tool calls)
 ```
 
-The first call to `HNOCAModel(...)` takes ~10 s (loads subset, fits 30-D
-PCA, trains classifiers, builds kNN); subsequent tool calls are sub-second.
+## Run the agent (Hermes-CLI via MCP)
 
-## Benchmark
-
-```bash
-make build-questions      # rebuild ground truth from data/hnoca_dt_subset.h5ad
-make eval                 # full 3-module agent
-make eval-no-tools        # same LLM, no tool calls (frontier-LLM baseline)
-make eval-with-plan       # research-planning + analysis (no literature)
-```
-
-Each run writes `benchmarks/results/<timestamp>_<mode>.csv` with per-question
-pass/fail, tool calls used, the model's answer, and the grader's reasoning.
-The headline score prints at the end.
-
-The atlas-recall question set has 11 questions whose ground truth is
-pre-computed from `data/hnoca_dt_subset.h5ad`. Frontier-LLM-no-tools should
-score near zero (the answers depend on actually looking at the atlas, not on
-text knowledge); the full agent should beat it by a wide margin.
-
-## Using the package as a library
-
-```python
-from organoid_agent import (
-    AgentLLM, LLMConfig,
-    ResearchPlanning, Analysis, LiteratureReasoning,
-    HNOCAModel, PubMedTool,
-    organoid_agent, experiment_analysis, literature_reasoning,
-)
-
-llm = AgentLLM(LLMConfig(temperature=0.4))
-hnoca = HNOCAModel()
-pubmed = PubMedTool()
-
-planning   = ResearchPlanning(llm)
-analysis   = Analysis(llm, hnoca, pubmed=pubmed)
-literature = LiteratureReasoning(llm, pubmed)
-
-# Full 3-module run
-result = organoid_agent(
-    "Do ARID1B-mutant cortical organoids show OPC expansion?",
-    planning, analysis, literature, do_cite=True,
-)
-print(result.final)
-for c in result.citations:
-    print(c.pmid, c.title, '--', c.evidence[:120])
-```
-
-## Use it from Hermes-CLI (or any MCP client)
-
-The repo ships an MCP server (`organoid_agent/mcp_server.py`) that
-exposes all 7 HNOCA + PubMed tools over the Model Context Protocol.
-Once registered, Hermes-CLI (or Claude Desktop, Cursor, Zed, …) can
-call them natively.
-
-**One-time register with Hermes:**
+One-time registration in `~/.hermes/config.yaml`:
 
 ```yaml
-# ~/.hermes/config.yaml — append this block
 mcp_servers:
   organoid_agent:
     command: "/opt/anaconda3/bin/python3"     # or your Python path
@@ -154,24 +182,35 @@ mcp_servers:
     timeout: 120
 ```
 
-**Verify:**
+Verify and use:
 
 ```bash
 hermes mcp list                       # should show 'organoid_agent ✓ enabled'
-hermes mcp test organoid_agent        # should report 7 tools discovered
-```
-
-**Use:**
-
-```bash
+hermes mcp test organoid_agent        # 7 tools discovered
 hermes -z "What cells dominate Velasco day-100 cortical organoids?"
-# -> Hermes calls our mcp_organoid_agent_query_composition tool
-# -> returns real HNOCA numbers, narrates them via Hermes-4-14B
 ```
 
-This is the *Hermes-native* path. The Python orchestration in
-`organoid_agent.core` is still available if you want to drive the
-agent loop yourself.
+## Use as a library (Python)
+
+```python
+from organoid_agent import (
+    AgentLLM, LLMConfig, HNOCAModel, PubMedTool,
+    ResearchPlanning, Analysis, LiteratureReasoning,
+    organoid_agent,
+)
+
+llm = AgentLLM(LLMConfig(temperature=0.4))
+hnoca = HNOCAModel(); pubmed = PubMedTool()
+analysis = Analysis(llm, hnoca, pubmed=pubmed)
+result = organoid_agent(
+    "Do ARID1B-mutant cortical organoids show OPC expansion?",
+    ResearchPlanning(llm), analysis, LiteratureReasoning(llm, pubmed),
+    do_cite=True,
+)
+print(result.final)
+```
+
+---
 
 ## Layout
 
@@ -179,50 +218,57 @@ agent loop yourself.
 organoid_agent/                     # the Python package (Medea-style)
 ├── __init__.py
 ├── __main__.py                     # python -m organoid_agent — REPL or one-shot
-├── core.py                         # organoid_agent() / experiment_analysis() / literature_reasoning()
+├── core.py                         # 3-module workflows
 ├── modules/
 │   ├── agent_llms.py               # AgentLLM, LLMConfig
-│   ├── research_planning.py        # ResearchPlanning
-│   ├── analysis.py                 # Analysis (the tool-calling chat loop)
-│   └── literature_reasoning.py     # LiteratureReasoning
+│   ├── research_planning.py        # ResearchPlanning module
+│   ├── analysis.py                 # Analysis module (tool-calling loop)
+│   └── literature_reasoning.py     # LiteratureReasoning module
 ├── tool_space/
 │   ├── hnoca.py                    # HNOCAModel — 5 tools over the HNOCA atlas
 │   ├── pubmed.py                   # PubMedTool — search + fetch via NCBI
-│   ├── instructions.py             # tool registry + OpenAI schema builder
-│   └── tool_config.json            # declarative registry
-└── mcp_server.py                   # stdio MCP server — exposes tools to
-                                    # Hermes-CLI / Claude Desktop / Cursor / Zed
+│   ├── instructions.py             # OpenAI tool-schema builder
+│   └── tool_config.json            # declarative tool registry (single source of truth)
+└── mcp_server.py                   # stdio MCP server for Hermes-CLI etc.
 
 benchmarks/
-├── build_atlas_recall.py           # rebuilds ground truth from HNOCA
-├── eval.py                         # runs agent on question set, grades, writes CSV
+├── tasks/                          # ★ THE TASK EVALUATIONS ★
+│   ├── common.py                   # shared helpers (split, KL, F1, AUROC)
+│   ├── task_02_cell_type_annotation.py
+│   ├── task_03_composition_shift.py
+│   ├── task_08_oop_generalization.py
+│   ├── task_10_cross_protocol_transfer.py
+│   └── task_11_novel_cell_detection.py
+├── build_atlas_recall.py           # rebuilds ground truth for atlas-recall demo eval
+├── eval.py                         # the agent vs no-tools demo eval (LLM-graded)
 └── questions/atlas_recall.yaml     # 11 atlas-recall questions
 
 scripts/
-└── download_hnoca_subset.py        # streaming subset downloader (HTTP range reads)
+└── download_hnoca_subset.py        # streaming HTTP-range subset downloader
 
 data/                               # downloaded subsets (gitignored)
-plots/                              # output figures (gitignored)
-docs/                               # project notes + PDF
-demo/                               # annotated agent transcript
+docs/project_notes.md (+ .pdf)      # full task spec, lit review, pivots
+demo/example_session.md             # annotated agent transcript
 ```
 
 ## What lives where
 
-- **This GitHub repo**: code only.
+- **This GitHub repo:** code only.
 - **Zenodo** ([record 14161275](https://zenodo.org/records/14161275)): the HNOCA atlas. Streamed on demand, never committed.
-- **Nous Portal**: the Hermes-4 LLM. API key only.
+- **Local Ollama:** the Hermes-4-14B model weights (~9 GB on disk).
 
 ## Roadmap
 
 - [x] Real HNOCA streamed; plots from real cells, not synthetic
-- [x] 5 HNOCA tools wired
-- [x] Medea-style 3-module architecture
-- [x] Hermes-4 (Nous Portal) as the backbone LLM
-- [x] PubMed tool for citation grounding
-- [x] Atlas-recall benchmark with 11 questions
-- [ ] Reproduction benchmark (the 18 brain-organoid papers in `docs/project_notes.md`)
+- [x] 7 tools wired (5 HNOCA + 2 PubMed)
+- [x] Medea-style 3-module Python agent
+- [x] Hermes-4-14B local backbone via Ollama (free)
+- [x] MCP server for Hermes-CLI integration
+- [x] **Per-task scientific evals for T2, T3, T8, T10, T11** (real numbers above)
+- [x] Atlas-recall LLM-graded benchmark (11 questions)
+- [ ] Plug a foundation-model embedding (Geneformer / scGPT / UCE) → re-run T2/T8/T11 → quantify the gap
+- [ ] Bootstrap confidence intervals for T3 / T10 (low-sample-size tasks)
+- [ ] Download Bhaduri / CHOOSE / Gleeson / Amin-Pasca → implement T12 / T14 / T13 / T15
 - [ ] Citation-grounding evaluation (real-PMID audit)
-- [ ] Foundation-model embedding tools (Geneformer, scGPT)
-- [ ] CellFlow integration for perturbation prediction
-- [ ] Project Paola's organoids into the HNOCA latent
+- [ ] CellFlow integration for T10 / T15
+- [ ] Project Paola's organoids into the HNOCA latent (the eventual Arlotta use case)
