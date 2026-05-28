@@ -1,14 +1,4 @@
-"""
-Pluggable LLM client.
 
-Wraps the OpenAI Python SDK against any OpenAI-compatible endpoint. The default
-backbone is Hermes-4 via Nous Portal, but Azure OpenAI, OpenAI proper, Dartmouth,
-LiteLLM, or vLLM proxies all work — just point ``OPENAI_BASE_URL`` at the right
-host.
-
-Mirrors the structure of ``medea/modules/agent_llms.py`` so anything you'd write
-against Medea's ``AgentLLM`` will read familiarly here.
-"""
 from __future__ import annotations
 
 import os
@@ -29,20 +19,10 @@ class LLMConfig:
     temperature: float = DEFAULT_TEMPERATURE
     max_tokens: Optional[int] = None
     top_p: Optional[float] = None
-    reasoning_effort: Optional[str] = None  # "low" | "medium" | "high" — for reasoning models
+    reasoning_effort: Optional[str] = None
 
 
 class AgentLLM:
-    """Thin OpenAI-compatible chat client.
-
-    Resolves API key / base URL / model from env vars at construction. The same
-    instance can be reused by multiple modules.
-
-    Env vars (read at __init__ time, can be overridden by constructor kwargs):
-        OPENAI_API_KEY       — required
-        OPENAI_BASE_URL      — default: https://api.portal.nousresearch.com/v1
-        AGENT_MODEL          — default: Hermes-4-405B
-    """
 
     def __init__(
         self,
@@ -55,9 +35,6 @@ class AgentLLM:
         self.config = config or LLMConfig()
         self.model = llm_name or os.environ.get("AGENT_MODEL", DEFAULT_MODEL)
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL") or DEFAULT_BASE_URL
-        # Local backends (Ollama, vLLM, LM Studio) don't require an API key, but
-        # the OpenAI SDK still wants a non-empty string. Default to a placeholder
-        # so the smallest-config "just install Ollama" path works out of the box.
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or "ollama-local"
         try:
             from openai import OpenAI
