@@ -2,7 +2,9 @@
 
 A multi-module AI agent for human-neural-organoid biology, modelled on
 [**Medea**](https://github.com/mims-harvard/medea) (Sui, Li, …, Zitnik
-bioRxiv 2026) and powered by **Hermes-4** via [Nous Portal](https://portal.nousresearch.com).
+bioRxiv 2026) and powered by **Hermes-4** running locally via Ollama
+(no API keys, no recurring cost). Drop-in compatible with any OpenAI-style
+endpoint — OpenAI, OpenRouter, Nous Portal, Azure — via two env-vars.
 
 Three collaborating modules — Research Planning, Analysis, Literature
 Reasoning — that orchestrate tool calls against the
@@ -54,20 +56,23 @@ All tools answer from real data — never the LLM's parametric memory.
 ## Setup
 
 ```bash
-# 1. Environment
+# 1. Python env
 conda create -n organoid-agent python=3.11 -y
 conda activate organoid-agent
 pip install -r requirements.txt
 
-# 2. Backbone — sign up at https://portal.nousresearch.com and grab a key
-cp .env.example .env
-#   OPENAI_API_KEY=sk-...
-#   OPENAI_BASE_URL=https://api.portal.nousresearch.com/v1   (Hermes-4)
-#   AGENT_MODEL=Hermes-4-405B                                (or Hermes-4-70B)
+# 2. Local LLM backbone — Hermes-4-14B via Ollama (free, ~9 GB on disk)
+brew install ollama                                                                 # one-time
+brew services start ollama                                                          # one-time
+ollama pull hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M                   # ~9 GB
+# (no API key needed; defaults in organoid_agent/modules/agent_llms.py point here)
 
-# 3. Real HNOCA subset (~80 MB; streamed from Zenodo over HTTP range reads)
+# 3. Real HNOCA subset (~80 MB; streamed from Zenodo via HTTP range reads)
 make data
 ```
+
+For a different backbone — Nous Portal Hermes-4-405B, OpenAI GPT-4o,
+OpenRouter, etc. — see the alternative blocks in `.env.example`.
 
 There's a Makefile with shortcuts: `make data / explore / plots / agent /
 demo / eval / eval-no-tools / eval-with-plan / test`.

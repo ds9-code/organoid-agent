@@ -16,8 +16,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_BASE_URL = "https://api.portal.nousresearch.com/v1"
-DEFAULT_MODEL = "Hermes-4-405B"  # Nous Portal naming as of 2026; can override via AGENT_MODEL
+# Defaults: local Ollama serving Hermes-4-14B (the project's recommended
+# free/local backbone). Override via OPENAI_BASE_URL + AGENT_MODEL for any
+# other OpenAI-compatible endpoint (OpenAI, Nous Portal, OpenRouter, Azure, ...).
+DEFAULT_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_MODEL = "hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M"
 
 
 @dataclass
@@ -52,11 +55,10 @@ class AgentLLM:
         self.config = config or LLMConfig()
         self.model = llm_name or os.environ.get("AGENT_MODEL", DEFAULT_MODEL)
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL") or DEFAULT_BASE_URL
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not self.api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is not set. Copy .env.example to .env and fill it in."
-            )
+        # Local backends (Ollama, vLLM, LM Studio) don't require an API key, but
+        # the OpenAI SDK still wants a non-empty string. Default to a placeholder
+        # so the smallest-config "just install Ollama" path works out of the box.
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or "ollama-local"
         try:
             from openai import OpenAI
         except ImportError as e:
