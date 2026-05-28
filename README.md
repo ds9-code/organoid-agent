@@ -134,6 +134,45 @@ for c in result.citations:
     print(c.pmid, c.title, '--', c.evidence[:120])
 ```
 
+## Use it from Hermes-CLI (or any MCP client)
+
+The repo ships an MCP server (`organoid_agent/mcp_server.py`) that
+exposes all 7 HNOCA + PubMed tools over the Model Context Protocol.
+Once registered, Hermes-CLI (or Claude Desktop, Cursor, Zed, …) can
+call them natively.
+
+**One-time register with Hermes:**
+
+```yaml
+# ~/.hermes/config.yaml — append this block
+mcp_servers:
+  organoid_agent:
+    command: "/opt/anaconda3/bin/python3"     # or your Python path
+    args: ["-m", "organoid_agent.mcp_server"]
+    env:
+      PYTHONPATH: "/Users/<you>/organoid-agent"
+    timeout: 120
+```
+
+**Verify:**
+
+```bash
+hermes mcp list                       # should show 'organoid_agent ✓ enabled'
+hermes mcp test organoid_agent        # should report 7 tools discovered
+```
+
+**Use:**
+
+```bash
+hermes -z "What cells dominate Velasco day-100 cortical organoids?"
+# -> Hermes calls our mcp_organoid_agent_query_composition tool
+# -> returns real HNOCA numbers, narrates them via Hermes-4-14B
+```
+
+This is the *Hermes-native* path. The Python orchestration in
+`organoid_agent.core` is still available if you want to drive the
+agent loop yourself.
+
 ## Layout
 
 ```
@@ -146,11 +185,13 @@ organoid_agent/                     # the Python package (Medea-style)
 │   ├── research_planning.py        # ResearchPlanning
 │   ├── analysis.py                 # Analysis (the tool-calling chat loop)
 │   └── literature_reasoning.py     # LiteratureReasoning
-└── tool_space/
-    ├── hnoca.py                    # HNOCAModel — 5 tools over the HNOCA atlas
-    ├── pubmed.py                   # PubMedTool — search + fetch via NCBI
-    ├── instructions.py             # tool registry + OpenAI schema builder
-    └── tool_config.json            # declarative registry
+├── tool_space/
+│   ├── hnoca.py                    # HNOCAModel — 5 tools over the HNOCA atlas
+│   ├── pubmed.py                   # PubMedTool — search + fetch via NCBI
+│   ├── instructions.py             # tool registry + OpenAI schema builder
+│   └── tool_config.json            # declarative registry
+└── mcp_server.py                   # stdio MCP server — exposes tools to
+                                    # Hermes-CLI / Claude Desktop / Cursor / Zed
 
 benchmarks/
 ├── build_atlas_recall.py           # rebuilds ground truth from HNOCA

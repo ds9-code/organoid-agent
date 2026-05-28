@@ -42,6 +42,20 @@ demo:
 demo-plan:
 	PYTHONPATH=. $(PYTHON) -m organoid_agent --cite "$(DEMO_QUESTION)"
 
+# ---------------------------------------------------------------------------
+# Hermes-CLI integration via MCP
+# (after `make mcp-register` you can run `hermes -z "..."` and it'll call our tools)
+# ---------------------------------------------------------------------------
+mcp-server:
+	@echo "Starting organoid-agent MCP server on stdio (Ctrl-C to stop)"
+	PYTHONPATH=. $(PYTHON) -m organoid_agent.mcp_server
+
+mcp-test:
+	hermes mcp test organoid_agent
+
+hermes-demo:
+	hermes -z "Use the organoid_agent tools: $(DEMO_QUESTION)"
+
 test:
 	$(PYTHON) -m pytest tests/ -q
 

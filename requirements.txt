@@ -19,6 +19,9 @@ requests>=2.31
 openai>=1.40
 python-dotenv>=1.0
 
+# MCP server (so Hermes-CLI / Claude Desktop / Cursor can call HNOCA tools)
+mcp>=1.0
+
 # Optional / heavy — uncomment when needed
 # scvi-tools>=1.0
 # torch>=2.1
