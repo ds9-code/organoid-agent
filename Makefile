@@ -10,7 +10,8 @@
 PYTHON ?= python
 DEMO_QUESTION ?= What cells dominate a Velasco day-100 cortical organoid?
 
-.PHONY: help data explore plots demo agent test eval eval-no-tools build-questions
+.PHONY: help data explore plots demo agent test eval eval-no-tools build-questions \
+        eval-tasks eval-t02 eval-t03 eval-t08 eval-t10 eval-t11
 
 help:
 	@echo "Targets:"
@@ -19,6 +20,8 @@ help:
 	@echo "  make plots     - regenerate plots/*.png from the real subset"
 	@echo "  make agent     - start the interactive agent REPL (needs OPENAI_API_KEY)"
 	@echo "  make demo      - one-shot agent: $(DEMO_QUESTION)"
+	@echo "  make eval-tasks- run all five per-task scientific evals (T2,T3,T8,T10,T11)"
+	@echo "  make eval-t02  - just the cell-type annotation eval"
 	@echo "  make test      - run the pytest smoke test"
 
 data:
@@ -53,3 +56,35 @@ eval-no-tools:
 
 eval-with-plan:
 	PYTHONPATH=. $(PYTHON) -m benchmarks.eval --mode agent_plan
+
+# ---------------------------------------------------------------------------
+# Per-task scientific evaluations (the spreadsheet tasks).
+# Each is a self-contained Python script — no LLM, just predictions + metrics.
+# ---------------------------------------------------------------------------
+eval-tasks: eval-t02 eval-t08 eval-t11 eval-t03 eval-t10
+
+eval-t02:
+	@echo "=== T2 Cell-Type Annotation (coarse) ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_02_cell_type_annotation --granularity coarse
+	@echo
+	@echo "=== T2 Cell-Type Annotation (fine) ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_02_cell_type_annotation --granularity fine
+
+eval-t08:
+	@echo "=== T8 Out-of-Protocol Generalisation (coarse) ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_08_oop_generalization --granularity coarse
+	@echo
+	@echo "=== T8 Out-of-Protocol Generalisation (fine) ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_08_oop_generalization --granularity fine
+
+eval-t11:
+	@echo "=== T11 Novel-Cell Detection ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_11_novel_cell_detection
+
+eval-t03:
+	@echo "=== T3 Composition Shift Over Time ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_03_composition_shift
+
+eval-t10:
+	@echo "=== T10 Cross-Protocol Composition Transfer ==="
+	PYTHONPATH=. $(PYTHON) -m benchmarks.tasks.task_10_cross_protocol_transfer
